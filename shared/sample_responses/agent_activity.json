@@ -1,0 +1,12 @@
+{
+  "items": [
+    {
+      "activity_id": "act-001",
+      "occurred_at": "2026-11-19T09:10:00Z",
+      "patient_id": "402",
+      "activity_type": "bottleneck",
+      "message": "Pharmacy and Insurance are independently blocked; departure remains locked.",
+      "generation_mode": null
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 {
   "patient_id": "402",
+  "transport_required": true,
   "version": 1,
   "milestones": [
     {"milestone_id": "clinical_clearance", "label": "Clinical clearance", "status": "completed", "dependencies": [], "locked": false},

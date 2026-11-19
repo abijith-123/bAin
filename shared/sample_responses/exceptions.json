@@ -1,0 +1,22 @@
+{
+  "items": [
+    {
+      "exception_id": "ex-ph-402",
+      "patient_id": "402",
+      "department": "pharmacy",
+      "code": "MEDICATION_STOCKOUT",
+      "status": "open",
+      "summary": "Medication unavailable; pharmacist review required",
+      "version": 7
+    },
+    {
+      "exception_id": "ex-ins-402",
+      "patient_id": "402",
+      "department": "insurance",
+      "code": "ERR_AUTH_409",
+      "status": "open",
+      "summary": "Authorization rejected; billing specialist review required",
+      "version": 7
+    }
+  ]
+}

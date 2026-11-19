@@ -1,14 +1,16 @@
 openapi: 3.1.0
 info:
   title: bAin Discharge Coordination API
-  version: 0.1.0-draft
+  version: 1.0.0
   description: >-
-    Draft contract based on the team's project brief. Validate against the official
-    IEEE TechX Domain 3 document before implementation. All patient/case data is synthetic.
+    Shared wire contract reviewed against the official IEEE TechX 2026 Domain 3
+    University Track brief. All cases and identities are synthetic demo data.
 servers:
   - url: http://127.0.0.1:8000
 tags:
   - name: system
+  - name: dashboard
+  - name: departments
   - name: patients
   - name: workflow
   - name: exceptions
@@ -29,6 +31,19 @@ paths:
                 properties:
                   status: { type: string, const: ok }
                   service: { type: string }
+  /api/dashboard/summary:
+    get:
+      tags: [dashboard]
+      summary: Return role-filtered operational dashboard totals
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Current synthetic workflow totals
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /api/patients:
     get:
       tags: [patients]
@@ -135,6 +150,25 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /api/departments/status:
+    get:
+      tags: [departments]
+      summary: Return role-filtered department workload and blocker counts
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Department status data visible to the caller
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/DepartmentStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /api/exceptions:
     get:
       tags: [exceptions]
@@ -252,7 +286,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: opaque
-      description: Draft authentication scheme; use synthetic demo identities only.
+      description: Server-validated bearer token mapped to a synthetic actor and role; callers cannot choose their role in request data.
   parameters:
     PatientId:
       in: path
@@ -266,6 +300,24 @@ components:
     Role:
       type: string
       enum: [admin, doctor, nurse, pharmacist, billing_specialist, transport_staff, housekeeping]
+    DashboardSummary:
+      type: object
+      required: [generated_at, active_cases, blocked_cases, completed_today, available_beds, pending_specialist_reviews]
+      properties:
+        generated_at: { type: string, format: date-time }
+        active_cases: { type: integer, minimum: 0 }
+        blocked_cases: { type: integer, minimum: 0 }
+        completed_today: { type: integer, minimum: 0 }
+        available_beds: { type: integer, minimum: 0 }
+        pending_specialist_reviews: { type: integer, minimum: 0 }
+    DepartmentStatus:
+      type: object
+      required: [department, status, open_cases, blocked_cases]
+      properties:
+        department: { type: string, enum: [pharmacy, insurance, transport, housekeeping] }
+        status: { $ref: '#/components/schemas/WorkflowStatus' }
+        open_cases: { type: integer, minimum: 0 }
+        blocked_cases: { type: integer, minimum: 0 }
     PatientSummary:
       type: object
       required: [patient_id, workflow_status, version, blockers]
@@ -304,6 +356,7 @@ components:
               status: { $ref: '#/components/schemas/WorkflowStatus' }
               dependencies: { type: array, items: { type: string } }
               locked: { type: boolean }
+        transport_required: { type: boolean, description: Whether transport readiness is an additional departure prerequisite for this case. }
         blockers: { type: array, items: { type: string } }
     MilestoneUpdateRequest:
       type: object
@@ -358,9 +411,10 @@ components:
         generation_mode: { type: [string, 'null'], enum: [llm, deterministic_fallback, 'null'] }
     Error:
       type: object
-      required: [error, message]
+      required: [error, code, message]
       properties:
         error: { type: string }
+        code: { type: string, enum: [UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, STALE_VERSION, INVALID_TRANSITION, IDEMPOTENCY_CONFLICT, VALIDATION_ERROR, INTERNAL_ERROR] }
         message: { type: string }
         details: { type: object, additionalProperties: true }
   responses:

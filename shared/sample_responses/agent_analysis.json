@@ -1,0 +1,13 @@
+{
+  "summary": "Patient 402 is medically cleared, but departure is blocked by a pharmacy stockout and an insurance authorization rejection.",
+  "blockers": [
+    "Pharmacy stockout",
+    "ERR_AUTH_409"
+  ],
+  "suggested_actions": [
+    "Route the medication stockout to the pharmacist.",
+    "Route ERR_AUTH_409 to the billing specialist."
+  ],
+  "escalation_draft": "Please review the medication stockout for synthetic case 402 and advise on an available replacement.",
+  "generation_mode": "deterministic_fallback"
+}

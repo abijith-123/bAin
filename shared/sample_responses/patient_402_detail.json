@@ -1,0 +1,18 @@
+{
+  "patient_id": "402",
+  "workflow_status": "blocked",
+  "version": 7,
+  "blockers": [
+    "Pharmacy stockout",
+    "Insurance authorization ERR_AUTH_409"
+  ],
+  "clinical_clearance_at": "2026-11-19T09:00:00Z",
+  "departments": {
+    "pharmacy": "blocked",
+    "insurance": "blocked",
+    "transport": "ready",
+    "housekeeping": "pending"
+  },
+  "clinical_summary": null,
+  "transport_required": true
+}
