@@ -6,32 +6,47 @@ import hashlib
 import json
 import os
 import sqlite3
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from backend.audit import list_audit_events, record_audit_event, utc_now_iso
-from backend.auth import Actor, can_resolve_exception, can_update_milestone
+from backend.auth import (
+    Actor,
+    can_resolve_exception,
+    can_update_milestone,
+    filter_exceptions_for_role,
+    sanitize_activity_text,
+    visible_departments_for_role,
+)
 from backend.dag import (
     DAG_BY_ID,
     DAG_SPECS,
     DAGValidationError,
+    DEPARTMENT_TO_MILESTONE,
     compute_overall_workflow_status,
     compute_unlocked_promotions,
     is_milestone_locked,
     validate_milestone_transition,
 )
 from backend.models import (
+    AgentActivityItem,
+    AgentActivityType,
     AuditEventItem,
     AuditOutcome,
+    DashboardSummary,
     Department,
+    DepartmentStatusItem,
     ErrorCode,
     ExceptionItem,
     ExceptionStatus,
+    GenerationMode,
     MilestoneItem,
     MilestoneUpdateResponse,
     PatientDetail,
     PatientSummary,
+    Role,
     WorkflowResponse,
     WorkflowStatus,
 )
@@ -167,6 +182,17 @@ class ClearTurnStore:
                     status_code INTEGER NOT NULL,
                     response_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS agent_activity (
+                    activity_id TEXT PRIMARY KEY,
+                    occurred_at TEXT NOT NULL,
+                    patient_id TEXT,
+                    activity_type TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    generation_mode TEXT,
+                    visibility_scope TEXT NOT NULL DEFAULT 'clinical',
+                    trace_id TEXT
                 );
                 """
             )
@@ -545,7 +571,7 @@ class ClearTurnStore:
                 conn.execute("COMMIT")
                 return MilestoneUpdateResponse(**replayed)
 
-            if milestone_id not in DAG_BY_ID:
+            if milestone_id not in DAG_BY_ID and milestone_id != "transport":
                 self._reject_with_durable_audit(
                     conn,
                     actor=actor,
@@ -590,6 +616,96 @@ class ClearTurnStore:
                     ),
                 )
 
+            # 2b. Dedicated transport readiness transition (for transport_required cases)
+            if milestone_id == "transport":
+                current_transport = WorkflowStatus(patient["transport_status"])
+                if current_transport == target_status:
+                    self._reject_with_durable_audit(
+                        conn,
+                        actor=actor,
+                        patient_id=patient_id,
+                        action=action,
+                        current_version=current_version,
+                        error=WorkflowError(
+                            status_code=409,
+                            code=ErrorCode.INVALID_TRANSITION,
+                            message=f"Transport readiness is already '{target_status.value}'.",
+                            details={
+                                "milestone_id": "transport",
+                                "current_status": current_transport.value,
+                                "target_status": target_status.value,
+                            },
+                        ),
+                    )
+                if target_status == WorkflowStatus.pending:
+                    self._reject_with_durable_audit(
+                        conn,
+                        actor=actor,
+                        patient_id=patient_id,
+                        action=action,
+                        current_version=current_version,
+                        error=WorkflowError(
+                            status_code=409,
+                            code=ErrorCode.INVALID_TRANSITION,
+                            message="Cannot transition transport readiness back to 'pending'.",
+                            details={"milestone_id": "transport", "target_status": target_status.value},
+                        ),
+                    )
+
+                now = utc_now_iso()
+                new_version = current_version + 1
+                cur = conn.execute(
+                    """
+                    UPDATE patients
+                    SET transport_status = ?, version = ?
+                    WHERE patient_id = ? AND version = ?
+                    """,
+                    (target_status.value, new_version, patient_id, expected_version),
+                )
+                if cur.rowcount != 1:
+                    conn.execute("ROLLBACK")
+                    raise StaleVersionError(
+                        expected_version=expected_version,
+                        current_version=current_version,
+                    )
+
+                audit_event_id = record_audit_event(
+                    conn,
+                    actor_id=actor.actor_id,
+                    actor_role=actor.role,
+                    patient_id=patient_id,
+                    action=action,
+                    outcome=AuditOutcome.success,
+                    reason=reason,
+                    version=new_version,
+                )
+                response = MilestoneUpdateResponse(
+                    patient_id=patient_id,
+                    milestone_id="transport",
+                    status=target_status,
+                    version=new_version,
+                    audit_event_id=audit_event_id,
+                )
+                conn.execute(
+                    """
+                    INSERT INTO idempotency_keys (
+                        idempotency_key, actor_id, endpoint, request_hash,
+                        status_code, response_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        idempotency_key,
+                        actor.actor_id,
+                        endpoint,
+                        request_hash,
+                        200,
+                        response.model_dump_json(),
+                        now,
+                    ),
+                )
+                conn.execute("COMMIT")
+                return response
+
             # 3. Deterministic DAG & exception guard
             statuses = self._load_milestone_statuses(conn, patient_id)
             open_exc_rows = conn.execute(
@@ -608,7 +724,10 @@ class ClearTurnStore:
                     milestone_statuses=statuses,
                     open_exception_codes=open_exc_codes,
                     transport_required=bool(patient["transport_required"]),
-                    transport_ready=(patient["transport_status"] == WorkflowStatus.ready.value),
+                    transport_ready=(
+                        patient["transport_status"]
+                        in {WorkflowStatus.ready.value, WorkflowStatus.completed.value}
+                    ),
                 )
             except DAGValidationError as exc:
                 self._reject_with_durable_audit(
@@ -950,3 +1069,519 @@ class ClearTurnStore:
                     raise
                 current_version = exc.current_version
         raise RuntimeError("Unreachable retry loop exit")
+
+    def create_synthetic_case(
+        self,
+        *,
+        patient_id: str,
+        display_name: str,
+        clinical_summary: str,
+        clinical_clearance_at: str | None = "2026-11-19T09:00:00Z",
+        transport_required: bool = False,
+        transport_status: WorkflowStatus = WorkflowStatus.ready,
+        milestone_statuses: dict[str, WorkflowStatus] | None = None,
+    ) -> None:
+        """Insert a synthetic case for local scenarios or automated tests."""
+        defaults: dict[str, WorkflowStatus] = {
+            "clinical_clearance": WorkflowStatus.completed,
+            "pharmacy": WorkflowStatus.ready,
+            "insurance": WorkflowStatus.ready,
+            "patient_departed": WorkflowStatus.pending,
+            "housekeeping_dispatched": WorkflowStatus.pending,
+            "bed_ready": WorkflowStatus.pending,
+        }
+        if milestone_statuses:
+            defaults.update(milestone_statuses)
+
+        now = utc_now_iso()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """
+                INSERT INTO patients (
+                    patient_id, display_name, clinical_summary,
+                    clinical_clearance_at, transport_required, transport_status, version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    patient_id,
+                    display_name,
+                    clinical_summary,
+                    clinical_clearance_at,
+                    1 if transport_required else 0,
+                    transport_status.value,
+                    1,
+                ),
+            )
+            for spec in DAG_SPECS:
+                st = defaults[spec.milestone_id]
+                conn.execute(
+                    """
+                    INSERT INTO milestones (patient_id, milestone_id, status, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (patient_id, spec.milestone_id, st.value, now),
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def record_agent_activity(
+        self,
+        *,
+        patient_id: str | None,
+        activity_type: AgentActivityType,
+        message: str,
+        generation_mode: GenerationMode | None = None,
+        visibility_scope: str = "clinical",
+        trace_id: str | None = None,
+    ) -> AgentActivityItem:
+        """Persist a sanitized agent activity record in SQLite."""
+        activity_id = f"act-{uuid.uuid4().hex[:12]}"
+        occurred_at = utc_now_iso()
+        safe_message = sanitize_activity_text(message)
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """
+                INSERT INTO agent_activity (
+                    activity_id, occurred_at, patient_id, activity_type,
+                    message, generation_mode, visibility_scope, trace_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    activity_id,
+                    occurred_at,
+                    patient_id,
+                    activity_type.value,
+                    safe_message,
+                    generation_mode.value if generation_mode else None,
+                    visibility_scope,
+                    trace_id,
+                ),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+        return AgentActivityItem(
+            activity_id=activity_id,
+            occurred_at=_parse_iso_dt(occurred_at) or datetime.now(timezone.utc),
+            patient_id=patient_id,
+            activity_type=activity_type,
+            message=safe_message,
+            generation_mode=generation_mode,
+        )
+
+    def list_agent_activity(
+        self, *, limit: int = 100
+    ) -> list[tuple[AgentActivityItem, str]]:
+        """Return recent agent activity items along with internal visibility_scope."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT activity_id, occurred_at, patient_id, activity_type,
+                       message, generation_mode, visibility_scope
+                FROM agent_activity
+                ORDER BY rowid DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            results: list[tuple[AgentActivityItem, str]] = []
+            for row in rows:
+                item = AgentActivityItem(
+                    activity_id=row["activity_id"],
+                    occurred_at=_parse_iso_dt(row["occurred_at"]) or datetime.now(timezone.utc),
+                    patient_id=row["patient_id"],
+                    activity_type=AgentActivityType(row["activity_type"]),
+                    message=row["message"],
+                    generation_mode=(
+                        GenerationMode(row["generation_mode"])
+                        if row["generation_mode"]
+                        else None
+                    ),
+                )
+                results.append((item, row["visibility_scope"]))
+            return results
+        finally:
+            conn.close()
+
+    def record_department_check_outcome(
+        self,
+        *,
+        patient_id: str,
+        department: Department,
+        outcome: str,
+        code: str | None,
+        summary: str | None,
+        actor: Actor,
+    ) -> dict[str, Any]:
+        """Persist a single department check outcome atomically inside BEGIN IMMEDIATE.
+
+        Rules:
+        - Never auto-resolves an existing open human-review exception.
+        - Never creates duplicate unresolved exceptions for the same (patient, milestone, code).
+        - Never triggers duplicate milestone transitions if already in the target state.
+        - Timeouts / service_unavailable never erase or alter other departments' state.
+        """
+        if department not in {Department.pharmacy, Department.insurance}:
+            raise WorkflowError(
+                status_code=422,
+                code=ErrorCode.VALIDATION_ERROR,
+                message=f"Department check only supports pharmacy or insurance, got '{department.value}'.",
+            )
+
+        milestone_id = DEPARTMENT_TO_MILESTONE[department]
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            patient = self._load_patient_row(conn, patient_id)
+            current_version = int(patient["version"])
+            statuses = self._load_milestone_statuses(conn, patient_id)
+            current_status = statuses[milestone_id]
+
+            if outcome in {"timeout", "service_unavailable"}:
+                conn.execute("COMMIT")
+                return {
+                    "department": department.value,
+                    "outcome": outcome,
+                    "changed": False,
+                    "degraded": True,
+                    "milestone_status": current_status.value,
+                    "version": current_version,
+                    "exception_id": None,
+                }
+
+            if outcome in {"stockout", "rejected"}:
+                exc_code = code or (
+                    "MEDICATION_STOCKOUT"
+                    if department == Department.pharmacy
+                    else "ERR_AUTH_409"
+                )
+                exc_summary = summary or (
+                    f"{department.value.title()} check blocked ({exc_code}); specialist review required"
+                )
+
+                # Idempotency: do not duplicate an existing open exception for the same milestone/code
+                existing_open = conn.execute(
+                    """
+                    SELECT exception_id FROM exceptions
+                    WHERE patient_id = ? AND milestone_id = ? AND code = ? AND status = 'open'
+                    """,
+                    (patient_id, milestone_id, exc_code),
+                ).fetchone()
+                if existing_open is not None:
+                    conn.execute("COMMIT")
+                    return {
+                        "department": department.value,
+                        "outcome": outcome,
+                        "changed": False,
+                        "degraded": False,
+                        "milestone_status": current_status.value,
+                        "version": current_version,
+                        "exception_id": existing_open["exception_id"],
+                        "duplicate_prevented": True,
+                    }
+
+                if current_status == WorkflowStatus.completed:
+                    conn.execute("COMMIT")
+                    return {
+                        "department": department.value,
+                        "outcome": outcome,
+                        "changed": False,
+                        "degraded": False,
+                        "milestone_status": current_status.value,
+                        "version": current_version,
+                        "exception_id": None,
+                    }
+
+                prefix = "ex-ph" if department == Department.pharmacy else "ex-ins"
+                candidate_id = f"{prefix}-{patient_id}"
+                id_taken = conn.execute(
+                    "SELECT 1 FROM exceptions WHERE exception_id = ?",
+                    (candidate_id,),
+                ).fetchone()
+                exception_id = (
+                    f"{candidate_id}-{uuid.uuid4().hex[:6]}"
+                    if id_taken is not None
+                    else candidate_id
+                )
+
+                now = utc_now_iso()
+                conn.execute(
+                    """
+                    INSERT INTO exceptions (
+                        exception_id, patient_id, milestone_id, department, code, status, summary
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        exception_id,
+                        patient_id,
+                        milestone_id,
+                        department.value,
+                        exc_code,
+                        ExceptionStatus.open.value,
+                        exc_summary,
+                    ),
+                )
+                conn.execute(
+                    """
+                    UPDATE milestones
+                    SET status = ?, updated_at = ?
+                    WHERE patient_id = ? AND milestone_id = ?
+                    """,
+                    (WorkflowStatus.blocked.value, now, patient_id, milestone_id),
+                )
+                new_version = current_version + 1
+                conn.execute(
+                    "UPDATE patients SET version = ? WHERE patient_id = ? AND version = ?",
+                    (new_version, patient_id, current_version),
+                )
+                record_audit_event(
+                    conn,
+                    actor_id=actor.actor_id,
+                    actor_role=actor.role,
+                    patient_id=patient_id,
+                    action=f"department_check:{department.value}:blocked",
+                    outcome=AuditOutcome.success,
+                    reason=f"Opened {exc_code} exception ({exception_id}) requiring specialist review",
+                    version=new_version,
+                )
+                conn.execute("COMMIT")
+                return {
+                    "department": department.value,
+                    "outcome": outcome,
+                    "changed": True,
+                    "degraded": False,
+                    "milestone_status": WorkflowStatus.blocked.value,
+                    "version": new_version,
+                    "exception_id": exception_id,
+                    "duplicate_prevented": False,
+                }
+
+            if outcome in {"available", "approved"}:
+                # Never auto-resolve an existing open human-review exception.
+                open_cnt = conn.execute(
+                    """
+                    SELECT COUNT(*) AS cnt FROM exceptions
+                    WHERE patient_id = ? AND milestone_id = ? AND status = 'open'
+                    """,
+                    (patient_id, milestone_id),
+                ).fetchone()["cnt"]
+                if open_cnt > 0 or current_status == WorkflowStatus.blocked:
+                    conn.execute("COMMIT")
+                    return {
+                        "department": department.value,
+                        "outcome": outcome,
+                        "changed": False,
+                        "degraded": False,
+                        "milestone_status": current_status.value,
+                        "version": current_version,
+                        "exception_id": None,
+                        "held_for_human_review": True,
+                    }
+
+                if current_status == WorkflowStatus.completed:
+                    conn.execute("COMMIT")
+                    return {
+                        "department": department.value,
+                        "outcome": outcome,
+                        "changed": False,
+                        "degraded": False,
+                        "milestone_status": WorkflowStatus.completed.value,
+                        "version": current_version,
+                        "exception_id": None,
+                    }
+
+                if statuses.get("clinical_clearance") != WorkflowStatus.completed:
+                    conn.execute("COMMIT")
+                    return {
+                        "department": department.value,
+                        "outcome": outcome,
+                        "changed": False,
+                        "degraded": False,
+                        "milestone_status": current_status.value,
+                        "version": current_version,
+                        "exception_id": None,
+                        "reason": "clinical_clearance_not_completed",
+                    }
+
+                now = utc_now_iso()
+                conn.execute(
+                    """
+                    UPDATE milestones
+                    SET status = ?, updated_at = ?
+                    WHERE patient_id = ? AND milestone_id = ?
+                    """,
+                    (WorkflowStatus.completed.value, now, patient_id, milestone_id),
+                )
+                statuses[milestone_id] = WorkflowStatus.completed
+                for promoted_id, promoted_status in compute_unlocked_promotions(statuses).items():
+                    conn.execute(
+                        """
+                        UPDATE milestones
+                        SET status = ?, updated_at = ?
+                        WHERE patient_id = ? AND milestone_id = ?
+                        """,
+                        (promoted_status.value, now, patient_id, promoted_id),
+                    )
+
+                new_version = current_version + 1
+                conn.execute(
+                    "UPDATE patients SET version = ? WHERE patient_id = ? AND version = ?",
+                    (new_version, patient_id, current_version),
+                )
+                record_audit_event(
+                    conn,
+                    actor_id=actor.actor_id,
+                    actor_role=actor.role,
+                    patient_id=patient_id,
+                    action=f"department_check:{department.value}:completed",
+                    outcome=AuditOutcome.success,
+                    reason=f"Independent {department.value} check returned '{outcome}'",
+                    version=new_version,
+                )
+                conn.execute("COMMIT")
+                return {
+                    "department": department.value,
+                    "outcome": outcome,
+                    "changed": True,
+                    "degraded": False,
+                    "milestone_status": WorkflowStatus.completed.value,
+                    "version": new_version,
+                    "exception_id": None,
+                }
+
+            raise WorkflowError(
+                status_code=422,
+                code=ErrorCode.VALIDATION_ERROR,
+                message=f"Unsupported department check outcome '{outcome}'.",
+            )
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def get_dashboard_summary(self, role: Role) -> DashboardSummary:
+        """Compute live operational dashboard KPIs directly from SQLite."""
+        conn = self._connect()
+        try:
+            now_dt = datetime.now(timezone.utc)
+            today_prefix = now_dt.strftime("%Y-%m-%d")
+            patient_rows = conn.execute("SELECT patient_id FROM patients").fetchall()
+
+            active_cases = 0
+            blocked_cases = 0
+            completed_today = 0
+            available_beds = 0
+
+            for prow in patient_rows:
+                pid = prow["patient_id"]
+                ms_rows = conn.execute(
+                    "SELECT milestone_id, status, updated_at FROM milestones WHERE patient_id = ?",
+                    (pid,),
+                ).fetchall()
+                statuses = {r["milestone_id"]: WorkflowStatus(r["status"]) for r in ms_rows}
+                updated_map = {r["milestone_id"]: r["updated_at"] for r in ms_rows}
+                overall = compute_overall_workflow_status(statuses)
+
+                if overall == WorkflowStatus.completed:
+                    bed_updated = updated_map.get("bed_ready", "")
+                    if bed_updated.startswith(today_prefix):
+                        completed_today += 1
+                else:
+                    active_cases += 1
+
+                if overall == WorkflowStatus.blocked:
+                    blocked_cases += 1
+
+                if statuses.get("bed_ready") == WorkflowStatus.completed:
+                    available_beds += 1
+
+            open_exceptions = self.list_exceptions(status_filter=ExceptionStatus.open)
+            visible_open = filter_exceptions_for_role(role, open_exceptions)
+
+            return DashboardSummary(
+                generated_at=now_dt,
+                active_cases=active_cases,
+                blocked_cases=blocked_cases,
+                completed_today=completed_today,
+                available_beds=available_beds,
+                pending_specialist_reviews=len(visible_open),
+            )
+        finally:
+            conn.close()
+
+    def get_departments_status(self, role: Role) -> list[DepartmentStatusItem]:
+        """Compute role-filtered department workload and blocker counts directly from SQLite."""
+        visible_depts = visible_departments_for_role(role)
+        conn = self._connect()
+        try:
+            patient_rows = conn.execute(
+                "SELECT patient_id, transport_status FROM patients"
+            ).fetchall()
+
+            dept_statuses: dict[Department, list[WorkflowStatus]] = {
+                dept: [] for dept in visible_depts
+            }
+
+            for prow in patient_rows:
+                pid = prow["patient_id"]
+                statuses = self._load_milestone_statuses(conn, pid)
+                per_patient = {
+                    Department.pharmacy: statuses["pharmacy"],
+                    Department.insurance: statuses["insurance"],
+                    Department.transport: (
+                        WorkflowStatus.completed
+                        if statuses["patient_departed"] == WorkflowStatus.completed
+                        else WorkflowStatus(prow["transport_status"])
+                    ),
+                    Department.housekeeping: (
+                        WorkflowStatus.completed
+                        if statuses["bed_ready"] == WorkflowStatus.completed
+                        else statuses["housekeeping_dispatched"]
+                    ),
+                }
+                for dept in visible_depts:
+                    dept_statuses[dept].append(per_patient[dept])
+
+            items: list[DepartmentStatusItem] = []
+            for dept in visible_depts:
+                sts = dept_statuses[dept]
+                open_cases = sum(1 for s in sts if s != WorkflowStatus.completed)
+                blocked_cases = sum(1 for s in sts if s == WorkflowStatus.blocked)
+                if any(s == WorkflowStatus.blocked for s in sts):
+                    agg = WorkflowStatus.blocked
+                elif any(s == WorkflowStatus.in_progress for s in sts):
+                    agg = WorkflowStatus.in_progress
+                elif any(s == WorkflowStatus.ready for s in sts):
+                    agg = WorkflowStatus.ready
+                elif any(s == WorkflowStatus.pending for s in sts):
+                    agg = WorkflowStatus.pending
+                else:
+                    agg = WorkflowStatus.completed
+                items.append(
+                    DepartmentStatusItem(
+                        department=dept,
+                        status=agg,
+                        open_cases=open_cases,
+                        blocked_cases=blocked_cases,
+                    )
+                )
+            return items
+        finally:
+            conn.close()

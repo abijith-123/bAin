@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from backend.models import (
+    AgentActivityItem,
     AuditEventItem,
     Department,
     ErrorCode,
@@ -63,6 +65,7 @@ MILESTONE_ALLOWED_ROLES: dict[str, frozenset[Role]] = {
     "clinical_clearance": frozenset({Role.doctor}),
     "pharmacy": frozenset({Role.pharmacist}),
     "insurance": frozenset({Role.billing_specialist}),
+    "transport": frozenset({Role.transport_staff}),
     "patient_departed": frozenset({Role.nurse, Role.transport_staff}),
     "housekeeping_dispatched": frozenset({Role.housekeeping}),
     "bed_ready": frozenset({Role.housekeeping}),
@@ -296,3 +299,87 @@ def redact_advisory_text_for_role(role: Role, text: str | None) -> str | None:
     if role in NON_CLINICAL_OPS_ROLES:
         return "Operational readiness summary only; clinical details redacted by policy."
     return text
+
+
+# Clinical and specialist roles permitted to call POST /api/agent/analyze.
+# Operational-only roles (housekeeping, transport_staff) are denied server-side (403 FORBIDDEN).
+ANALYZE_ALLOWED_ROLES: frozenset[Role] = frozenset(
+    {Role.admin, Role.doctor, Role.nurse, Role.pharmacist, Role.billing_specialist}
+)
+
+_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"Bearer\s+[A-Za-z0-9._\-]+", re.IGNORECASE),
+    re.compile(r"\b(?:sk|gsk|AIza)[A-Za-z0-9_\-]{8,}\b"),
+    re.compile(r"(?i)(api[_-]?key|token|secret)\s*[:=]\s*\S+"),
+)
+
+
+def can_access_analyze(role: Role) -> bool:
+    """Return True if role is permitted to request read-only advisory analysis."""
+    return role in ANALYZE_ALLOWED_ROLES
+
+
+def visible_departments_for_role(role: Role) -> list[Department]:
+    """Return departments visible to the caller's role."""
+    if role == Role.housekeeping:
+        return [Department.housekeeping]
+    if role == Role.transport_staff:
+        return [Department.transport, Department.housekeeping]
+    if role == Role.pharmacist:
+        return [Department.pharmacy]
+    if role == Role.billing_specialist:
+        return [Department.insurance]
+    return [
+        Department.pharmacy,
+        Department.insurance,
+        Department.transport,
+        Department.housekeeping,
+    ]
+
+
+def sanitize_activity_text(message: str, max_length: int = 320) -> str:
+    """Scrub credentials, bearer tokens, and excessive prompt text before durable persistence."""
+    cleaned = " ".join(message.strip().split())
+    for pattern in _SECRET_PATTERNS:
+        cleaned = pattern.sub("[REDACTED]", cleaned)
+    if len(cleaned) > max_length:
+        cleaned = cleaned[: max_length - 3].rstrip() + "..."
+    return cleaned
+
+
+def filter_agent_activity_for_role(
+    role: Role,
+    rows: list[tuple[AgentActivityItem, str]],
+) -> list[AgentActivityItem]:
+    """Filter and redact persisted agent activity items according to caller role.
+
+    visibility_scope values: 'operational', 'pharmacy', 'insurance', 'clinical', 'admin'.
+    """
+    if role in {Role.admin, Role.doctor, Role.nurse}:
+        return [item for item, _scope in rows]
+
+    filtered: list[AgentActivityItem] = []
+    for item, scope in rows:
+        if role == Role.pharmacist:
+            if scope in {"pharmacy", "operational"}:
+                filtered.append(item)
+        elif role == Role.billing_specialist:
+            if scope in {"insurance", "operational"}:
+                filtered.append(item)
+        elif role in {Role.housekeeping, Role.transport_staff}:
+            if scope == "operational":
+                filtered.append(
+                    item.model_copy(
+                        update={
+                            "message": (
+                                f"Operational orchestration event ({item.activity_type.value})"
+                                if any(
+                                    term in item.message.lower()
+                                    for term in ("clinical", "diagnosis", "medication", "stockout", "auth", "insurance", "pharmacy")
+                                )
+                                else item.message
+                            )
+                        }
+                    )
+                )
+    return filtered

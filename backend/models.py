@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class WorkflowStatus(str, Enum):
@@ -42,6 +42,20 @@ class ExceptionStatus(str, Enum):
 class AuditOutcome(str, Enum):
     success = "success"
     rejected = "rejected"
+
+
+class AgentActivityType(str, Enum):
+    tool_call = "tool_call"
+    bottleneck = "bottleneck"
+    summary = "summary"
+    escalation = "escalation"
+    error = "error"
+    recovery = "recovery"
+
+
+class GenerationMode(str, Enum):
+    llm = "llm"
+    deterministic_fallback = "deterministic_fallback"
 
 
 class ErrorCode(str, Enum):
@@ -103,6 +117,14 @@ class MilestoneUpdateRequest(BaseModel):
     expected_version: int = Field(ge=1)
     reason: str = Field(min_length=3, max_length=1000)
 
+    @field_validator("reason")
+    @classmethod
+    def validate_non_blank_reason(cls, value: str) -> str:
+        stripped = value.strip()
+        if len(stripped) < 3:
+            raise ValueError("reason must contain at least 3 non-whitespace characters.")
+        return stripped
+
 
 class MilestoneUpdateResponse(BaseModel):
     patient_id: str
@@ -130,6 +152,14 @@ class ExceptionResolveRequest(BaseModel):
     resolution: str = Field(min_length=3, max_length=1000)
     expected_version: int = Field(ge=1)
 
+    @field_validator("resolution")
+    @classmethod
+    def validate_non_blank_resolution(cls, value: str) -> str:
+        stripped = value.strip()
+        if len(stripped) < 3:
+            raise ValueError("resolution must contain at least 3 non-whitespace characters.")
+        return stripped
+
 
 class AuditEventItem(BaseModel):
     event_id: str
@@ -145,3 +175,53 @@ class AuditEventItem(BaseModel):
 
 class AuditListResponse(BaseModel):
     items: list[AuditEventItem]
+
+
+class DashboardSummary(BaseModel):
+    generated_at: datetime
+    active_cases: int = Field(ge=0)
+    blocked_cases: int = Field(ge=0)
+    completed_today: int = Field(ge=0)
+    available_beds: int = Field(ge=0)
+    pending_specialist_reviews: int = Field(ge=0)
+
+
+class DepartmentStatusItem(BaseModel):
+    department: Department
+    status: WorkflowStatus
+    open_cases: int = Field(ge=0)
+    blocked_cases: int = Field(ge=0)
+
+
+class DepartmentStatusListResponse(BaseModel):
+    items: list[DepartmentStatusItem]
+
+
+class AgentActivityItem(BaseModel):
+    activity_id: str
+    occurred_at: datetime
+    patient_id: str | None = None
+    activity_type: AgentActivityType
+    message: str
+    generation_mode: GenerationMode | None = None
+
+
+class AgentActivityListResponse(BaseModel):
+    items: list[AgentActivityItem]
+
+
+class AgentAnalyzeRequest(BaseModel):
+    patient_id: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]{1,64}$",
+    )
+    question: str | None = Field(default=None, max_length=1000)
+
+
+class AgentAnalyzeResponse(BaseModel):
+    summary: str
+    blockers: list[str]
+    suggested_actions: list[str]
+    escalation_draft: str | None = None
+    generation_mode: GenerationMode

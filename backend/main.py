@@ -6,12 +6,15 @@ from http import HTTPStatus
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, Path, Query, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from backend.auth import (
     Actor,
     AuthError,
+    can_access_analyze,
+    filter_agent_activity_for_role,
     filter_audit_events_for_role,
     filter_exceptions_for_role,
     filter_patient_detail_for_role,
@@ -20,8 +23,14 @@ from backend.auth import (
     get_current_actor,
 )
 from backend.db import ClearTurnStore, WorkflowError
+from backend.llm_advisory import AdvisoryProvider, AdvisoryService
 from backend.models import (
+    AgentActivityListResponse,
+    AgentAnalyzeRequest,
+    AgentAnalyzeResponse,
     AuditListResponse,
+    DashboardSummary,
+    DepartmentStatusListResponse,
     ErrorCode,
     ErrorResponse,
     ExceptionItem,
@@ -58,12 +67,17 @@ def _error_json(
     )
 
 
-def create_app(db_path: str | None = None) -> FastAPI:
+def create_app(
+    db_path: str | None = None,
+    advisory_provider: AdvisoryProvider | None = None,
+) -> FastAPI:
     store = ClearTurnStore(db_path=db_path)
     store.init_and_seed()
+    advisory = AdvisoryService(store, provider=advisory_provider)
 
     application = FastAPI(title="bAin API", version="1.0.0")
     application.state.store = store
+    application.state.advisory = advisory
 
     @application.exception_handler(AuthError)
     async def handle_auth_error(_request: Request, exc: AuthError) -> JSONResponse:
@@ -81,7 +95,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
             422,
             ErrorCode.VALIDATION_ERROR,
             "Request failed validation.",
-            {"errors": exc.errors()},
+            {"errors": jsonable_encoder(exc.errors())},
         )
 
     @application.exception_handler(Exception)
@@ -96,6 +110,26 @@ def create_app(db_path: str | None = None) -> FastAPI:
     def health() -> dict[str, str]:
         """Report that the API process is responding; this is not a workflow readiness check."""
         return {"status": "ok", "service": "bAin-api"}
+
+    @application.get(
+        "/api/dashboard/summary",
+        response_model=DashboardSummary,
+        tags=["dashboard"],
+    )
+    def get_dashboard_summary(
+        actor: Actor = Depends(get_current_actor),
+    ) -> DashboardSummary:
+        return store.get_dashboard_summary(actor.role)
+
+    @application.get(
+        "/api/departments/status",
+        response_model=DepartmentStatusListResponse,
+        tags=["departments"],
+    )
+    def get_departments_status(
+        actor: Actor = Depends(get_current_actor),
+    ) -> DepartmentStatusListResponse:
+        return DepartmentStatusListResponse(items=store.get_departments_status(actor.role))
 
     @application.get("/api/patients", response_model=PatientListResponse, tags=["patients"])
     def list_patients(
@@ -191,6 +225,41 @@ def create_app(db_path: str | None = None) -> FastAPI:
             expected_version=body.expected_version,
             actor=actor,
             idempotency_key=idempotency_key,
+        )
+
+    @application.get(
+        "/api/agent/activity",
+        response_model=AgentActivityListResponse,
+        tags=["agent"],
+    )
+    def get_agent_activity(
+        actor: Actor = Depends(get_current_actor),
+    ) -> AgentActivityListResponse:
+        rows = store.list_agent_activity()
+        return AgentActivityListResponse(
+            items=filter_agent_activity_for_role(actor.role, rows)
+        )
+
+    @application.post(
+        "/api/agent/analyze",
+        response_model=AgentAnalyzeResponse,
+        tags=["agent"],
+    )
+    def analyze_case(
+        body: AgentAnalyzeRequest,
+        actor: Actor = Depends(get_current_actor),
+    ) -> AgentAnalyzeResponse:
+        if not can_access_analyze(actor.role):
+            raise AuthError(
+                status_code=403,
+                code=ErrorCode.FORBIDDEN,
+                message=f"Role '{actor.role.value}' is not authorized to access advisory analysis.",
+                details={"actor_role": actor.role.value},
+            )
+        return advisory.analyze_case(
+            patient_id=body.patient_id,
+            actor=actor,
+            question=body.question,
         )
 
     return application
