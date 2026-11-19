@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Production build & Vite cache
+dist/
+.vite/
+
+# Local environment secrets (keep .env.example)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Test coverage
+coverage/
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+.tmp/
+
+# Override root Python .gitignore 'lib/' rule so frontend/web/src/lib/ is tracked
+!/src/lib/
