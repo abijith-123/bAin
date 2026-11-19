@@ -62,3 +62,11 @@ The analyze endpoint is read-only. It returns generation_mode as llm or determin
 ## Frontend mock data
 
 JSON fixtures under `shared/sample_responses/` use the contract's field names and enums. The frontend can build against these fixtures, then switch only its API adapter when the backend is ready.
+
+## Backend tool contract
+
+- `get_discharge_dag_state(patient_id)` returns current milestone statuses, dependencies, locked actions, case version, and role-filtered blockers. It is read-only.
+- `check_pharmacy_and_insurance(patient_id)` queries the two synthetic department services independently, records their separate outcomes, and opens targeted pharmacist or billing exceptions when blocked. One service failure must not erase the other result.
+- `update_department_milestone(patient_id, milestone_id, target_status, actor, expected_version, idempotency_key)` is the only state-changing path. It validates the actor, DAG prerequisites, version, and idempotency key, then commits the milestone, audit record, and version atomically.
+
+The LLM may request these tools only through the backend orchestrator. It receives no direct database access; the two read tools are safe to parallelize, while writes are serialized by transaction and optimistic version checks.

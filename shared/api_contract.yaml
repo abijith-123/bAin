@@ -339,6 +339,7 @@ components:
             clinical_summary:
               type: [string, 'null']
               description: Returned only to roles explicitly authorized by backend policy.
+            transport_required: { type: boolean, description: Whether transport readiness is an additional departure prerequisite for this case. }
     Workflow:
       type: object
       required: [patient_id, version, milestones, blockers]
@@ -408,7 +409,7 @@ components:
         patient_id: { type: [string, 'null'] }
         activity_type: { type: string, enum: [tool_call, bottleneck, summary, escalation, error, recovery] }
         message: { type: string }
-        generation_mode: { type: [string, 'null'], enum: [llm, deterministic_fallback, 'null'] }
+        generation_mode: { type: [string, 'null'], enum: [llm, deterministic_fallback, null] }
     Error:
       type: object
       required: [error, code, message]
