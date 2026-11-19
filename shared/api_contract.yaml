@@ -1,0 +1,391 @@
+openapi: 3.1.0
+info:
+  title: bAin Discharge Coordination API
+  version: 0.1.0-draft
+  description: >-
+    Draft contract based on the team's project brief. Validate against the official
+    IEEE TechX Domain 3 document before implementation. All patient/case data is synthetic.
+servers:
+  - url: http://127.0.0.1:8000
+tags:
+  - name: system
+  - name: patients
+  - name: workflow
+  - name: exceptions
+  - name: agent
+paths:
+  /api/health:
+    get:
+      tags: [system]
+      summary: Check whether the API process responds
+      responses:
+        '200':
+          description: API is responding
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, service]
+                properties:
+                  status: { type: string, const: ok }
+                  service: { type: string }
+  /api/patients:
+    get:
+      tags: [patients]
+      summary: List cases visible to the authenticated user
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: status
+          schema: { $ref: '#/components/schemas/WorkflowStatus' }
+      responses:
+        '200':
+          description: Visible case summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/PatientSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/patients/{patient_id}:
+    parameters:
+      - $ref: '#/components/parameters/PatientId'
+    get:
+      tags: [patients]
+      summary: Get a role-filtered case detail
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Case detail filtered for the caller's role
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PatientDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/patients/{patient_id}/workflow:
+    parameters:
+      - $ref: '#/components/parameters/PatientId'
+    get:
+      tags: [workflow]
+      summary: Get current milestones, blockers, and dependency state
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Workflow graph state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workflow' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/patients/{patient_id}/milestones:
+    parameters:
+      - $ref: '#/components/parameters/PatientId'
+    post:
+      tags: [workflow]
+      summary: Request a permitted milestone transition
+      description: Server-side RBAC, DAG checks, version checks, and audit logging are mandatory.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: { type: string, minLength: 8, maxLength: 128 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MilestoneUpdateRequest' }
+      responses:
+        '200':
+          description: Transition accepted and committed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MilestoneUpdateResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /api/patients/{patient_id}/audit:
+    parameters:
+      - $ref: '#/components/parameters/PatientId'
+    get:
+      tags: [workflow]
+      summary: Read permission-filtered audit events
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Chronological events visible to caller
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AuditEvent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/exceptions:
+    get:
+      tags: [exceptions]
+      summary: List exceptions assigned or visible to caller
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: status
+          schema: { type: string, enum: [open, resolved] }
+      responses:
+        '200':
+          description: Visible exceptions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Exception' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/exceptions/{exception_id}/resolve:
+    parameters:
+      - in: path
+        name: exception_id
+        required: true
+        schema: { type: string }
+    post:
+      tags: [exceptions]
+      summary: Resolve an exception as an authorized specialist
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: { type: string, minLength: 8, maxLength: 128 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resolution, expected_version]
+              properties:
+                resolution: { type: string, minLength: 3, maxLength: 1000 }
+                expected_version: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Exception resolved and audited
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Exception' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /api/agent/activity:
+    get:
+      tags: [agent]
+      summary: Read role-filtered agent and tool activity
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Recent activity records
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AgentActivity' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/agent/analyze:
+    post:
+      tags: [agent]
+      summary: Request an explanation and escalation draft for a case
+      description: LLM output is advisory only and cannot mutate workflow state.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [patient_id]
+              properties:
+                patient_id: { type: string }
+                question: { type: string, maxLength: 1000 }
+      responses:
+        '200':
+          description: Advisory response with generation mode disclosed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [summary, blockers, suggested_actions, generation_mode]
+                properties:
+                  summary: { type: string }
+                  blockers: { type: array, items: { type: string } }
+                  suggested_actions: { type: array, items: { type: string } }
+                  escalation_draft: { type: [string, 'null'] }
+                  generation_mode: { type: string, enum: [llm, deterministic_fallback] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: Draft authentication scheme; use synthetic demo identities only.
+  parameters:
+    PatientId:
+      in: path
+      name: patient_id
+      required: true
+      schema: { type: string, pattern: '^[A-Za-z0-9_-]{1,64}$' }
+  schemas:
+    WorkflowStatus:
+      type: string
+      enum: [pending, ready, in_progress, blocked, completed]
+    Role:
+      type: string
+      enum: [admin, doctor, nurse, pharmacist, billing_specialist, transport_staff, housekeeping]
+    PatientSummary:
+      type: object
+      required: [patient_id, workflow_status, version, blockers]
+      properties:
+        patient_id: { type: string }
+        display_name: { type: [string, 'null'], description: Excluded for roles that do not need it. }
+        workflow_status: { $ref: '#/components/schemas/WorkflowStatus' }
+        version: { type: integer, minimum: 1 }
+        blockers: { type: array, items: { type: string } }
+        clinical_clearance_at: { type: [string, 'null'], format: date-time }
+    PatientDetail:
+      allOf:
+        - $ref: '#/components/schemas/PatientSummary'
+        - type: object
+          properties:
+            departments:
+              type: object
+              additionalProperties: { $ref: '#/components/schemas/WorkflowStatus' }
+            clinical_summary:
+              type: [string, 'null']
+              description: Returned only to roles explicitly authorized by backend policy.
+    Workflow:
+      type: object
+      required: [patient_id, version, milestones, blockers]
+      properties:
+        patient_id: { type: string }
+        version: { type: integer, minimum: 1 }
+        milestones:
+          type: array
+          items:
+            type: object
+            required: [milestone_id, label, status, dependencies]
+            properties:
+              milestone_id: { type: string }
+              label: { type: string }
+              status: { $ref: '#/components/schemas/WorkflowStatus' }
+              dependencies: { type: array, items: { type: string } }
+              locked: { type: boolean }
+        blockers: { type: array, items: { type: string } }
+    MilestoneUpdateRequest:
+      type: object
+      required: [milestone_id, target_status, expected_version, reason]
+      properties:
+        milestone_id: { type: string }
+        target_status: { $ref: '#/components/schemas/WorkflowStatus' }
+        expected_version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 3, maxLength: 1000 }
+    MilestoneUpdateResponse:
+      type: object
+      required: [patient_id, milestone_id, status, version, audit_event_id]
+      properties:
+        patient_id: { type: string }
+        milestone_id: { type: string }
+        status: { $ref: '#/components/schemas/WorkflowStatus' }
+        version: { type: integer, minimum: 1 }
+        audit_event_id: { type: string }
+    Exception:
+      type: object
+      required: [exception_id, patient_id, department, code, status, version]
+      properties:
+        exception_id: { type: string }
+        patient_id: { type: string }
+        department: { type: string, enum: [pharmacy, insurance, transport, housekeeping] }
+        code: { type: string }
+        status: { type: string, enum: [open, resolved] }
+        summary: { type: string }
+        version: { type: integer, minimum: 1 }
+    AuditEvent:
+      type: object
+      required: [event_id, occurred_at, actor_role, action, outcome, version]
+      properties:
+        event_id: { type: string }
+        occurred_at: { type: string, format: date-time }
+        actor_id: { type: string }
+        actor_role: { $ref: '#/components/schemas/Role' }
+        patient_id: { type: string }
+        action: { type: string }
+        outcome: { type: string, enum: [success, rejected] }
+        reason: { type: [string, 'null'] }
+        version: { type: integer, minimum: 1 }
+    AgentActivity:
+      type: object
+      required: [activity_id, occurred_at, activity_type, message]
+      properties:
+        activity_id: { type: string }
+        occurred_at: { type: string, format: date-time }
+        patient_id: { type: [string, 'null'] }
+        activity_type: { type: string, enum: [tool_call, bottleneck, summary, escalation, error, recovery] }
+        message: { type: string }
+        generation_mode: { type: [string, 'null'], enum: [llm, deterministic_fallback, 'null'] }
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error: { type: string }
+        message: { type: string }
+        details: { type: object, additionalProperties: true }
+  responses:
+    Unauthorized:
+      description: Authentication is missing or invalid
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Authenticated role is not permitted to perform this action or view this data
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Case or exception does not exist or is not visible
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Stale version, invalid DAG transition, or idempotency conflict
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationError:
+      description: Request failed validation
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }

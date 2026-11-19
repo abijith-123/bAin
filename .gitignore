@@ -221,3 +221,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# bAin local state
+.env.*
+!.env.example
+*.db
+*.sqlite
+*.sqlite3
+data/local/
+.DS_Store
+.idea/
+.vscode/
