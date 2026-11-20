@@ -31,6 +31,7 @@ Role = Literal[
 ]
 Status = Literal["pending", "ready", "in_progress", "blocked", "completed"]
 Department = Literal["pharmacy", "insurance", "transport", "housekeeping"]
+ExceptionOutcome = Literal["cleared", "denial_upheld"]
 
 DB_PATH = Path(os.environ.get("BAIN_DB_PATH", Path(tempfile.gettempdir()) / "bain-demo.sqlite3"))
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -98,6 +99,7 @@ class MilestoneRequest(BaseModel):
 
 class ResolveRequest(BaseModel):
     resolution: str = Field(min_length=3, max_length=1000)
+    outcome: ExceptionOutcome
     expected_version: int = Field(ge=1)
 
 
@@ -187,7 +189,8 @@ def init_db() -> None:
                 status TEXT NOT NULL,
                 summary TEXT NOT NULL,
                 linked_milestone TEXT NOT NULL,
-                version INTEGER NOT NULL
+                version INTEGER NOT NULL,
+                resolution_outcome TEXT
             );
             CREATE TABLE IF NOT EXISTS department_service_state (
                 patient_id TEXT NOT NULL REFERENCES cases(patient_id),
@@ -223,6 +226,9 @@ def init_db() -> None:
                 generation_mode TEXT
             );
         """)
+        exception_columns = {row["name"] for row in db.execute("PRAGMA table_info(exceptions)")}
+        if "resolution_outcome" not in exception_columns:
+            db.execute("ALTER TABLE exceptions ADD COLUMN resolution_outcome TEXT")
         # Additive migration for local databases created before state snapshots
         # were included in audit events.
         audit_columns = {row["name"] for row in db.execute("PRAGMA table_info(audit_events)")}
@@ -351,6 +357,15 @@ def blockers_for(db: sqlite3.Connection, case: dict[str, Any], role: Role) -> li
             blockers.append("Another specialist review is pending")
         else:
             blockers.append(exc["code"] if role in {"doctor", "nurse", "admin", "pharmacist", "billing_specialist"} else "Specialist review pending")
+    upheld = db.execute(
+        "SELECT department, code FROM exceptions WHERE patient_id = ? AND status = 'resolved' AND resolution_outcome = 'denial_upheld'",
+        (case["patient_id"],),
+    ).fetchall()
+    for exc in upheld:
+        if role in {"transport_staff", "housekeeping"}:
+            blockers.append("Specialist follow-up required")
+        elif role in {"billing_specialist", "doctor", "nurse", "admin"}:
+            blockers.append(f"{exc['code']}: denial upheld; follow-up required")
     if case["milestones"].get("transport") == "blocked":
         blockers.append("Transport availability pending")
     return list(dict.fromkeys(blockers))
@@ -856,7 +871,7 @@ def list_exceptions(
         query += " ORDER BY patient_id, exception_id"
         items = []
         for row in db.execute(query, params):
-            item = {key: row[key] for key in ("exception_id", "patient_id", "department", "code", "status", "summary", "version")}
+            item = {key: row[key] for key in ("exception_id", "patient_id", "department", "code", "status", "summary", "version", "resolution_outcome")}
             if actor[1] == "admin":
                 item["summary"] = "Specialist review required; operational summary only."
             items.append(item)
@@ -874,7 +889,7 @@ def resolve_exception(
 ) -> dict[str, Any]:
     if not idempotency_key or not 8 <= len(idempotency_key) <= 128:
         raise APIError(422, "VALIDATION_ERROR", "A valid Idempotency-Key header is required.")
-    fingerprint = hashlib.sha256(json.dumps([exception_id, payload.resolution.strip(), payload.expected_version],
+    fingerprint = hashlib.sha256(json.dumps([exception_id, payload.resolution.strip(), payload.outcome, payload.expected_version],
                                                separators=(",", ":")).encode()).hexdigest()
     db = connect()
     try:
@@ -890,6 +905,8 @@ def resolve_exception(
         exc = db.execute("SELECT * FROM exceptions WHERE exception_id=?", (exception_id,)).fetchone()
         if exc is None:
             raise APIError(404, "NOT_FOUND", "Exception was not found.")
+        if payload.outcome == "denial_upheld" and exc["department"] != "insurance":
+            raise APIError(422, "VALIDATION_ERROR", "Denial upheld is only a valid outcome for insurance exceptions.")
         expected_role = {
             "pharmacy": "pharmacist",
             "insurance": "billing_specialist",
@@ -916,26 +933,28 @@ def resolve_exception(
             db.commit()
             raise APIError(409, "INVALID_TRANSITION", "This exception has already been resolved.")
         previous_milestone_status = case["milestones"][exc["linked_milestone"]]
-        case["milestones"][exc["linked_milestone"]] = "ready"
+        milestone_status = "blocked" if payload.outcome == "denial_upheld" else "ready"
+        case["milestones"][exc["linked_milestone"]] = milestone_status
         new_version = case_version + 1
         db.execute("UPDATE cases SET version=?, payload=? WHERE patient_id=? AND version=?",
                    (new_version, json.dumps(case), exc["patient_id"], case_version))
         if exc["department"] in {"pharmacy", "insurance"}:
             db.execute(
-                "UPDATE department_service_state SET status='ready' WHERE patient_id=? AND department=?",
-                (exc["patient_id"], exc["department"]),
+                "UPDATE department_service_state SET status=? WHERE patient_id=? AND department=?",
+                (milestone_status, exc["patient_id"], exc["department"]),
             )
-        db.execute("UPDATE exceptions SET status='resolved', version=? WHERE exception_id=? AND status='open'",
-                   (new_version, exception_id))
+        db.execute("UPDATE exceptions SET status='resolved', resolution_outcome=?, version=? WHERE exception_id=? AND status='open'",
+                   (payload.outcome, new_version, exception_id))
         db.execute("UPDATE exceptions SET version=? WHERE patient_id=? AND status='open'",
                    (new_version, exc["patient_id"]))
         record_audit(db, actor, exc["patient_id"], f"exception:{exception_id}:resolve",
                      "success", payload.resolution.strip(), new_version,
-                     previous_milestone_status, "ready")
+                     previous_milestone_status, milestone_status)
         response = {
             "exception_id": exception_id, "patient_id": exc["patient_id"],
             "department": exc["department"], "code": exc["code"],
             "status": "resolved", "summary": exc["summary"], "version": new_version,
+            "resolution_outcome": payload.outcome, "milestone_status": milestone_status,
         }
         db.execute("INSERT INTO idempotency VALUES (?, ?, ?, ?)",
                    (idempotency_key, actor[0], fingerprint, json.dumps(response)))

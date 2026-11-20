@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   CheckCircle2,
   Lock,
@@ -34,12 +34,8 @@ interface PatientDetailViewProps {
   detail: PatientDetail | null;
   workflow: WorkflowResponse | null;
   onRefresh: () => Promise<void>;
+  onOpenExceptions: () => void;
 }
-
-const TARGET_STATUS_OPTIONS: WorkflowStatus[] = [
-  "in_progress",
-  "completed",
-];
 
 export function PatientDetailView({
   activeRole,
@@ -47,9 +43,9 @@ export function PatientDetailView({
   detail,
   workflow,
   onRefresh,
+  onOpenExceptions,
 }: PatientDetailViewProps) {
   const [selectedMilestoneId, setSelectedMilestoneId] = useState<string>("pharmacy");
-  const [targetStatus, setTargetStatus] = useState<WorkflowStatus>("completed");
   const [reason, setReason] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
   const [actionError, setActionError] = useState<ApiError | null>(null);
@@ -59,19 +55,16 @@ export function PatientDetailView({
   const selectedMilestone = workflow?.milestones.find(
     (m) => m.milestone_id === selectedMilestoneId,
   );
-
-  useEffect(() => {
-    if (!selectedMilestone) return;
-    setTargetStatus(
-      selectedMilestone.status === "ready" || selectedMilestone.status === "in_progress"
-        ? "completed"
-        : "in_progress",
-    );
-  }, [selectedMilestoneId, selectedMilestone?.status]);
+  const nextTargetStatus: WorkflowStatus | null =
+    selectedMilestone?.status === "in_progress"
+      ? "completed"
+      : selectedMilestone?.status === "pending" || selectedMilestone?.status === "ready"
+        ? "in_progress"
+        : null;
 
   async function handleSubmitTransition(e: React.FormEvent) {
     e.preventDefault();
-    if (!workflow || !selectedMilestone) return;
+    if (!workflow || !selectedMilestone || !nextTargetStatus) return;
 
     setSubmitting(true);
     setActionError(null);
@@ -84,7 +77,7 @@ export function PatientDetailView({
         workflow.patient_id,
         {
           milestone_id: selectedMilestone.milestone_id,
-          target_status: targetStatus,
+          target_status: nextTargetStatus,
           expected_version: workflow.version,
           reason: reason.trim(),
         },
@@ -94,7 +87,6 @@ export function PatientDetailView({
         `Server confirmed ${res.milestone_id} → ${res.status} (v${res.version}, audit ${res.audit_event_id}).`,
       );
       setReason("");
-      if (targetStatus === "in_progress") setTargetStatus("completed");
       await onRefresh();
     } catch (err) {
       if (err instanceof ApiError) {
@@ -222,12 +214,6 @@ export function PatientDetailView({
               selectedMilestoneId={selectedMilestoneId}
               onSelectMilestone={(id) => {
                 setSelectedMilestoneId(id);
-                const nextMilestone = workflow?.milestones.find((item) => item.milestone_id === id);
-                setTargetStatus(
-                  nextMilestone?.status === "ready" || nextMilestone?.status === "in_progress"
-                    ? "completed"
-                    : "in_progress",
-                );
                 setReason("");
                 setActionError(null);
                 setConfirmationMsg(null);
@@ -285,20 +271,15 @@ export function PatientDetailView({
                 className="mt-4 grid gap-3 md:grid-cols-12"
               >
                 <div className="md:col-span-3">
-                  <label className="block text-[11px] font-medium text-slate-600">
-                    Target Status
-                  </label>
-                  <select
-                    value={targetStatus}
-                    onChange={(e) => setTargetStatus(e.target.value as WorkflowStatus)}
-                    className="mt-1 h-9 w-full rounded-md border border-slate-300 bg-white px-2.5 text-xs font-medium text-slate-900 focus:border-[#0f1d36] focus:outline-none"
-                  >
-                    {TARGET_STATUS_OPTIONS.map((st) => (
-                      <option key={st} value={st}>
-                        {st}
-                      </option>
-                    ))}
-                  </select>
+                  <span className="block text-[11px] font-medium text-slate-600">
+                    Next Status
+                  </span>
+                  <div className="mt-1 flex h-9 items-center rounded-md border border-slate-300 bg-slate-100 px-2.5 text-xs font-medium text-slate-700">
+                    {nextTargetStatus ??
+                      (selectedMilestone.status === "blocked"
+                        ? "Resolve exception first"
+                        : "No further transition")}
+                  </div>
                 </div>
 
                 <div className="md:col-span-6">
@@ -312,6 +293,7 @@ export function PatientDetailView({
                     value={reason}
                     onChange={(e) => setReason(e.target.value)}
                     placeholder={`Evidence for ${selectedMilestone.milestone_id} transition...`}
+                    disabled={!nextTargetStatus || selectedMilestone.locked}
                     className="mt-1 h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-xs text-slate-900 placeholder:text-slate-400 focus:border-[#0f1d36] focus:outline-none"
                   />
                 </div>
@@ -321,9 +303,7 @@ export function PatientDetailView({
                     type="submit"
                     className="w-full"
                     disabled={
-                      submitting || reason.trim().length < 3 || selectedMilestone.locked ||
-                      selectedMilestone.status === "blocked" ||
-                      selectedMilestone.status === "completed"
+                      submitting || reason.trim().length < 3 || !nextTargetStatus || selectedMilestone.locked
                     }
                   >
                     <Send className="h-3.5 w-3.5" />
@@ -338,9 +318,18 @@ export function PatientDetailView({
                 </p>
               )}
               {selectedMilestone.status === "blocked" && (
-                <p className="mt-2.5 text-[11px] text-rose-700">
-                  Resolve the assigned specialist exception before advancing this milestone.
-                </p>
+                <div className="mt-2.5 flex flex-wrap items-center gap-2 text-[11px] text-rose-700">
+                  <span>
+                    Blocked milestones cannot be started. The assigned specialist must resolve the exception first; the milestone will then move to Ready.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={onOpenExceptions}
+                    className="font-semibold underline underline-offset-2"
+                  >
+                    Open Exception Inbox
+                  </button>
+                </div>
               )}
               {selectedMilestone.status === "completed" && (
                 <p className="mt-2.5 text-[11px] text-emerald-700">

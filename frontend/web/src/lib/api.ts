@@ -9,6 +9,7 @@ import type {
   ErrorEnvelope,
   ExceptionItem,
   ExceptionResolveRequest,
+  ExceptionResolveResponse,
   ExceptionStatus,
   HealthResponse,
   MilestoneUpdateRequest,
@@ -197,8 +198,8 @@ export const clearTurnApi = {
     exceptionId: string,
     payload: ExceptionResolveRequest,
     idempotencyKey: string,
-  ): Promise<ExceptionItem> {
-    return requestJson<ExceptionItem>(
+  ): Promise<ExceptionResolveResponse> {
+    return requestJson<ExceptionResolveResponse>(
       `/api/exceptions/${encodeURIComponent(exceptionId)}/resolve`,
       {
         method: "POST",

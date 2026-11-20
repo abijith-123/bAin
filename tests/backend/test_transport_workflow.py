@@ -167,13 +167,13 @@ def test_pharmacy_and_billing_specialists_resolve_independently(database):
     api.check_pharmacy_and_insurance("402")
     pharmacy = api.resolve_exception(
         "ex-ph-402",
-        api.ResolveRequest(resolution="Pharmacist confirmed medication supply.", expected_version=1),
+        api.ResolveRequest(resolution="Pharmacist confirmed medication supply.", outcome="cleared", expected_version=1),
         actor("pharmacist"),
         "resolve-pharmacy-402",
     )
     insurance = api.resolve_exception(
         "ex-ins-402",
-        api.ResolveRequest(resolution="Billing specialist reviewed the authorization.", expected_version=2),
+        api.ResolveRequest(resolution="Billing specialist confirmed payer authorization.", outcome="cleared", expected_version=2),
         actor("billing_specialist"),
         "resolve-insurance-402",
     )
@@ -188,14 +188,41 @@ def test_pharmacy_and_billing_specialists_resolve_independently(database):
     pharmacist_resolution = next(item for item in pharmacist_audit if item["action"] == "exception:ex-ph-402:resolve")
     billing_resolution = next(item for item in billing_audit if item["action"] == "exception:ex-ins-402:resolve")
     assert pharmacist_resolution["reason"] == "Pharmacist confirmed medication supply."
-    assert billing_resolution["reason"] == "Billing specialist reviewed the authorization."
+    assert billing_resolution["reason"] == "Billing specialist confirmed payer authorization."
     assert next(item for item in pharmacist_audit if item["action"] == "exception:ex-ins-402:resolve")["reason"] is None
     assert next(item for item in billing_audit if item["action"] == "exception:ex-ph-402:resolve")["reason"] is None
+
+
+def test_upheld_insurance_denial_stays_blocked(database):
+    result = api.resolve_exception(
+        "ex-ins-404",
+        api.ResolveRequest(
+            resolution="Payer denial reviewed and upheld; appeal is required.",
+            outcome="denial_upheld",
+            expected_version=1,
+        ),
+        actor("billing_specialist"),
+        "insurance-denial-upheld-404",
+    )
+
+    assert result["status"] == "resolved"
+    assert result["resolution_outcome"] == "denial_upheld"
+    assert result["milestone_status"] == "blocked"
+    workflow = api.patient_workflow("404", actor=actor("billing_specialist"))
+    insurance = next(item for item in workflow["milestones"] if item["milestone_id"] == "insurance")
+    departed = next(item for item in workflow["milestones"] if item["milestone_id"] == "patient_departed")
+    assert insurance["status"] == "blocked"
+    assert "denial upheld" in " ".join(workflow["blockers"]).lower()
+    assert departed["locked"] is True
+    resolved = api.list_exceptions(status="resolved", actor=actor("billing_specialist"))["items"]
+    denial_record = next(item for item in resolved if item["exception_id"] == "ex-ins-404")
+    assert denial_record["resolution_outcome"] == "denial_upheld"
 
 
 def test_transport_specialist_resolves_exception_idempotently_and_audits(database):
     request = api.ResolveRequest(
         resolution="Transport team confirmed pickup availability.",
+        outcome="cleared",
         expected_version=1,
     )
     first = api.resolve_exception("ex-tr-405", request, actor("transport_staff"), "transport-405-confirm")
@@ -225,7 +252,7 @@ def test_other_role_cannot_resolve_transport_exception_and_attempt_is_audited(da
     with pytest.raises(api.APIError) as error:
         api.resolve_exception(
             "ex-tr-405",
-            api.ResolveRequest(resolution="Attempt unauthorized resolution", expected_version=1),
+            api.ResolveRequest(resolution="Attempt unauthorized resolution", outcome="cleared", expected_version=1),
             actor("housekeeping"),
             "housekeeping-transport",
         )

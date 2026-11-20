@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: bAin Discharge Coordination API
-  version: 1.0.0
+  version: 1.1.0
   description: >-
     Shared wire contract reviewed against the official IEEE TechX 2026 Domain 3
     University Track brief. All cases and identities are synthetic demo data.
@@ -213,13 +213,14 @@ paths:
           application/json:
             schema:
               type: object
-              required: [resolution, expected_version]
+              required: [resolution, outcome, expected_version]
               properties:
                 resolution: { type: string, minLength: 3, maxLength: 1000 }
+                outcome: { type: string, enum: [cleared, denial_upheld], description: Insurance denials upheld remain blocked; only confirmed clearance may move Insurance to ready. }
                 expected_version: { type: integer, minimum: 1 }
       responses:
         '200':
-          description: Exception resolved and audited; its linked milestone becomes ready but is never auto-completed
+          description: Specialist outcome is audited; only cleared exceptions move their linked milestone to ready. An upheld insurance denial remains blocked.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Exception' }
@@ -387,6 +388,7 @@ components:
         status: { type: string, enum: [open, resolved] }
         summary: { type: string }
         version: { type: integer, minimum: 1 }
+        resolution_outcome: { type: [string, 'null'], enum: [cleared, denial_upheld, null] }
     AuditEvent:
       type: object
       required: [event_id, occurred_at, actor_role, action, outcome, version]
