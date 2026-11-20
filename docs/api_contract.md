@@ -1,6 +1,6 @@
 # bAin shared API contract
 
-**Version:** 1.0.0 · **Status:** reviewed against the official IEEE TechX 2026 Domain 3 University Track brief · **Data:** synthetic only.
+**Version:** 1.1.0 · **Status:** reviewed against the official IEEE TechX 2026 Domain 3 University Track brief · **Data:** synthetic only.
 
 The OpenAPI file at `shared/api_contract.yaml` is the shared wire-format source of truth. Both developers should use its exact field names and enums.
 
@@ -26,7 +26,7 @@ Use a server-validated bearer token mapped to a synthetic actor and role. Never 
 | transport_staff | Update transport readiness, resolve transport-delay exceptions, and confirm departure | Pickup and transport details; no diagnosis or clinical notes |
 | housekeeping | Dispatch cleaning and mark a bed ready, after departure only | Room/bed and readiness status only |
 
-No role or AI action may autonomously modify a clinical order or override an insurer denial. A billing specialist records a human review outcome; the agent cannot treat a denial as approval.
+No role or AI action may autonomously modify a clinical order or override an insurer denial. A billing specialist must record whether authorization was obtained or the denial was upheld. An upheld denial leaves Insurance blocked; the agent cannot treat it as approval.
 
 ## Endpoints
 
@@ -41,7 +41,7 @@ No role or AI action may autonomously modify a clinical order or override an ins
 | GET /api/patients/{patient_id}/audit | Any authenticated role | Permission-filtered audit timeline |
 | GET /api/departments/status | Any authenticated role | Role-filtered department workload and blockers |
 | GET /api/exceptions | Assigned specialists; admin gets operational summaries | Specialist review queue |
-| POST /api/exceptions/{exception_id}/resolve | Assigned matching specialist: pharmacist, billing specialist, or transport staff | Human resolution form and result; resolving moves the linked milestone to `ready`, never directly to `completed` |
+| POST /api/exceptions/{exception_id}/resolve | Assigned matching specialist: pharmacist, billing specialist, or transport staff | Human resolution form and outcome; only a cleared issue moves its linked milestone to `ready`, never directly to `completed`. An upheld insurance denial stays blocked. |
 | GET /api/agent/activity | Any authenticated role | Role-filtered agent activity feed |
 | POST /api/agent/analyze | Clinical or relevant specialist roles | Explain blockers and draft a targeted escalation; read-only |
 

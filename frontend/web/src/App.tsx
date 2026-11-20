@@ -179,6 +179,7 @@ export function App() {
                   detail={patientDetail}
                   workflow={workflow}
                   onRefresh={syncAll}
+                  onOpenExceptions={() => setActiveTab("exceptions")}
                 />
               )}
 

@@ -1,5 +1,4 @@
 import {
-  Activity,
   Bot,
   FileClock,
   GitBranch,
@@ -40,14 +39,13 @@ export function Sidebar({
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-slate-800 bg-[#0a1426] text-slate-200">
       <div className="flex items-center gap-3 border-b border-slate-800/80 px-5 py-4">
-        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-sky-500/15 text-sky-400 ring-1 ring-sky-400/25">
-          <Activity className="h-5 w-5" />
-        </div>
-        <div>
-          <div className="text-sm font-semibold tracking-tight text-white">
-            bAin
-          </div>
-          <div className="text-[11px] text-slate-400">
+        <div className="min-w-0">
+          <img
+            src="/images/bain-logo.svg"
+            alt="bAIn"
+            className="h-10 w-[148px] object-contain object-left"
+          />
+          <div className="mt-0.5 pl-1 text-[11px] tracking-wide text-slate-400">
             Hospital Discharge Ops
           </div>
         </div>

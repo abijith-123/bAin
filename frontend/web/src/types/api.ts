@@ -117,11 +117,20 @@ export interface ExceptionItem {
   status: ExceptionStatus;
   summary?: string;
   version: number;
+  resolution_outcome?: ExceptionResolutionOutcome | null;
 }
+
+export type ExceptionResolutionOutcome = "cleared" | "denial_upheld";
 
 export interface ExceptionResolveRequest {
   resolution: string;
+  outcome: ExceptionResolutionOutcome;
   expected_version: number;
+}
+
+export interface ExceptionResolveResponse extends ExceptionItem {
+  resolution_outcome: ExceptionResolutionOutcome;
+  milestone_status: WorkflowStatus;
 }
 
 export interface AuditEventItem {

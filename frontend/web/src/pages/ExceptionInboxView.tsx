@@ -12,7 +12,7 @@ import {
 import { ApiError, clearTurnApi } from "@/lib/api";
 import { getRoleProfile } from "@/lib/roles";
 import { generateIdempotencyKey } from "@/lib/utils";
-import type { ExceptionItem, Role } from "@/types/api";
+import type { ExceptionItem, ExceptionResolutionOutcome, Role } from "@/types/api";
 
 interface ExceptionInboxViewProps {
   activeRole: Role;
@@ -28,6 +28,7 @@ export function ExceptionInboxView({
   onRefresh,
 }: ExceptionInboxViewProps) {
   const [resolutions, setResolutions] = useState<Record<string, string>>({});
+  const [outcomes, setOutcomes] = useState<Record<string, ExceptionResolutionOutcome | "">>({});
   const [submittingId, setSubmittingId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<ApiError | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -36,7 +37,8 @@ export function ExceptionInboxView({
 
   async function handleResolve(exc: ExceptionItem) {
     const text = (resolutions[exc.exception_id] ?? "").trim();
-    if (text.length < 3) return;
+    const outcome = outcomes[exc.exception_id] ?? (exc.department === "insurance" ? "" : "cleared");
+    if (text.length < 3 || !outcome) return;
 
     setSubmittingId(exc.exception_id);
     setActionError(null);
@@ -49,13 +51,14 @@ export function ExceptionInboxView({
         exc.exception_id,
         {
           resolution: text,
+          outcome,
           expected_version: exc.version,
         },
         idemKey,
       );
-      setSuccessMsg(
-        `Resolved ${updated.exception_id} (v${updated.version}). Linked milestone moved from blocked → ready; separate completion confirmation is still required.`,
-      );
+      setSuccessMsg(updated.resolution_outcome === "denial_upheld"
+        ? `Review recorded for ${updated.exception_id} (v${updated.version}). The denial remains in place and the insurance milestone remains blocked; follow-up is required.`
+        : `Resolved ${updated.exception_id} (v${updated.version}). Linked milestone moved from blocked → ready; separate completion confirmation is still required.`);
       setResolutions((prev) => ({ ...prev, [exc.exception_id]: "" }));
       await onRefresh();
     } catch (err) {
@@ -80,8 +83,8 @@ export function ExceptionInboxView({
         <p className="mt-1 text-sm text-slate-500">
           Human-in-the-loop resolution queue for{" "}
           <span className="font-medium text-slate-700">{roleProfile.label}</span>.
-          Resolving an exception unblocks its milestone to <span className="font-mono">ready</span>{" "}
-          without auto-completing it.
+          Resolving a confirmed issue moves its milestone to <span className="font-mono">ready</span>{" "}
+          without auto-completing it. An upheld insurance denial stays blocked.
         </p>
       </div>
 
@@ -144,6 +147,25 @@ export function ExceptionInboxView({
                     {exc.summary ?? "Specialist review required."}
                   </p>
 
+                  {isOpen && exc.department === "insurance" && (
+                    <label className="block max-w-xl text-xs font-medium text-slate-700">
+                      Specialist outcome
+                      <select
+                        value={outcomes[exc.exception_id] ?? ""}
+                        onChange={(event) => setOutcomes((prev) => ({
+                          ...prev,
+                          [exc.exception_id]: event.target.value as ExceptionResolutionOutcome | "",
+                        }))}
+                        className="mt-1 h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-xs text-slate-900"
+                        disabled={!canResolve}
+                      >
+                        <option value="">Select the verified outcome</option>
+                        <option value="cleared">Authorization obtained; clear insurance block</option>
+                        <option value="denial_upheld">Denial upheld; keep insurance blocked</option>
+                      </select>
+                    </label>
+                  )}
+
                   {isOpen && canResolve ? (
                     <div className="flex flex-col gap-2.5 sm:flex-row">
                       <input
@@ -160,7 +182,10 @@ export function ExceptionInboxView({
                       />
                       <Button
                         size="default"
-                        disabled={submittingId === exc.exception_id || draft.trim().length < 3}
+                        disabled={
+                          submittingId === exc.exception_id || draft.trim().length < 3 ||
+                          (exc.department === "insurance" && !(outcomes[exc.exception_id] ?? ""))
+                        }
                         onClick={() => handleResolve(exc)}
                       >
                         {submittingId === exc.exception_id
@@ -175,8 +200,9 @@ export function ExceptionInboxView({
                     </CardDescription>
                   ) : (
                     <CardDescription>
-                      Exception resolved and audited. Confirm the linked milestone in Patient #{exc.patient_id}
-                      DAG to advance the discharge pipeline.
+                      {exc.resolution_outcome === "denial_upheld"
+                        ? "Denial upheld. The insurance milestone remains blocked and requires follow-up."
+                        : "Exception resolved and audited. Confirm the linked milestone in the patient DAG to advance the discharge pipeline."}
                     </CardDescription>
                   )}
                 </CardContent>
