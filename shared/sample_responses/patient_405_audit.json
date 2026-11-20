@@ -1,0 +1,30 @@
+{
+  "items": [
+    {
+      "event_id": "audit-synthetic-001",
+      "occurred_at": "2026-11-19T09:15:00Z",
+      "actor_id": "demo-transport_staff",
+      "actor_role": "transport_staff",
+      "patient_id": "405",
+      "action": "exception:ex-tr-405:resolve",
+      "outcome": "success",
+      "reason": null,
+      "version": 2,
+      "previous_state": "blocked",
+      "new_state": "ready"
+    },
+    {
+      "event_id": "audit-synthetic-002",
+      "occurred_at": "2026-11-19T09:10:00Z",
+      "actor_id": null,
+      "actor_role": "housekeeping",
+      "patient_id": "405",
+      "action": "milestone:housekeeping_dispatched",
+      "outcome": "rejected",
+      "reason": null,
+      "version": 1,
+      "previous_state": "pending",
+      "new_state": "pending"
+    }
+  ]
+}

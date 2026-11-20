@@ -200,7 +200,7 @@ paths:
         schema: { type: string }
     post:
       tags: [exceptions]
-      summary: Resolve an exception as an authorized specialist
+      summary: Resolve an exception as its assigned pharmacist, billing specialist, or transport specialist
       security: [{ bearerAuth: [] }]
       parameters:
         - in: header
@@ -219,7 +219,7 @@ paths:
                 expected_version: { type: integer, minimum: 1 }
       responses:
         '200':
-          description: Exception resolved and audited
+          description: Exception resolved and audited; its linked milestone becomes ready but is never auto-completed
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Exception' }
@@ -400,6 +400,8 @@ components:
         outcome: { type: string, enum: [success, rejected] }
         reason: { type: [string, 'null'] }
         version: { type: integer, minimum: 1 }
+        previous_state: { type: [string, 'null'], description: Previous milestone or exception state, when applicable. }
+        new_state: { type: [string, 'null'], description: Resulting milestone or exception state, when applicable. }
     AgentActivity:
       type: object
       required: [activity_id, occurred_at, activity_type, message]

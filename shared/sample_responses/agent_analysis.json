@@ -1,13 +1,13 @@
 {
-  "summary": "Patient 402 is medically cleared, but departure is blocked by a pharmacy stockout and an insurance authorization rejection.",
+  "summary": "Synthetic case 402 has 2 visible blocker(s). Discharge cannot advance until required human reviews and milestones are complete.",
   "blockers": [
-    "Pharmacy stockout",
-    "ERR_AUTH_409"
+    "ERR_AUTH_409",
+    "MEDICATION_STOCKOUT"
   ],
   "suggested_actions": [
-    "Route the medication stockout to the pharmacist.",
-    "Route ERR_AUTH_409 to the billing specialist."
+    "Route ERR_AUTH_409 to the billing specialist for human review.",
+    "Route the medication stockout to the pharmacist for human review."
   ],
-  "escalation_draft": "Please review the medication stockout for synthetic case 402 and advise on an available replacement.",
+  "escalation_draft": "Please review synthetic case 402: ERR_AUTH_409, MEDICATION_STOCKOUT. Record your decision in the specialist workflow.",
   "generation_mode": "deterministic_fallback"
 }
