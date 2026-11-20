@@ -23,7 +23,3 @@
 .react-flow__node {
   cursor: pointer;
 }
-
-.react-flow__attribution {
-  display: none;
-}

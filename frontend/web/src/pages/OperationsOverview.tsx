@@ -27,32 +27,34 @@ import {
 } from "@/components/ui/card";
 import { formatUtcTimestamp } from "@/lib/utils";
 import type {
+  DashboardSummary,
   ExceptionItem,
   PatientSummary,
   WorkflowResponse,
 } from "@/types/api";
 
 interface OperationsOverviewProps {
+  summary: DashboardSummary | null;
   patients: PatientSummary[];
   exceptions: ExceptionItem[];
-  workflow402: WorkflowResponse | null;
+  workflow: WorkflowResponse | null;
+  patientId: string;
   onOpenPatient: (patientId: string) => void;
   onOpenExceptions: () => void;
 }
 
 export function OperationsOverview({
+  summary,
   patients,
   exceptions,
-  workflow402,
+  workflow,
+  patientId,
   onOpenPatient,
   onOpenExceptions,
 }: OperationsOverviewProps) {
-  const activeCount = patients.filter((p) => p.workflow_status !== "completed").length;
-  const blockedCount = patients.filter((p) => p.workflow_status === "blocked").length;
-  const completedCount = patients.filter((p) => p.workflow_status === "completed").length;
-  const openExceptions = exceptions.filter((e) => e.status === "open");
+  const openExceptions = exceptions.filter((exception) => exception.status === "open");
 
-  const milestoneProgressData = (workflow402?.milestones ?? []).map((m) => ({
+  const milestoneProgressData = (workflow?.milestones ?? []).map((m) => ({
     name: m.label.replace(" authorization", "").replace(" dispatched", ""),
     completed: m.status === "completed" ? 1 : 0,
     ready: m.status === "ready" || m.status === "in_progress" ? 1 : 0,
@@ -78,7 +80,7 @@ export function OperationsOverview({
             <div>
               <p className="text-xs font-medium text-slate-500">Active Discharges</p>
               <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">
-                {activeCount}
+                {summary?.active_cases ?? "—"}
               </p>
             </div>
             <div className="rounded-md bg-slate-100 p-2.5 text-slate-700">
@@ -92,7 +94,7 @@ export function OperationsOverview({
             <div>
               <p className="text-xs font-medium text-slate-500">Blocked Cases</p>
               <p className="mt-1 text-2xl font-semibold tabular-nums text-rose-700">
-                {blockedCount}
+                {summary?.blocked_cases ?? "—"}
               </p>
             </div>
             <div className="rounded-md bg-rose-50 p-2.5 text-rose-700">
@@ -104,9 +106,9 @@ export function OperationsOverview({
         <Card>
           <CardContent className="flex items-center justify-between p-4">
             <div>
-              <p className="text-xs font-medium text-slate-500">Open Specialist Reviews</p>
+              <p className="text-xs font-medium text-slate-500">Open Reviews (All Departments)</p>
               <p className="mt-1 text-2xl font-semibold tabular-nums text-amber-700">
-                {openExceptions.length}
+                {summary?.pending_specialist_reviews ?? "—"}
               </p>
             </div>
             <div className="rounded-md bg-amber-50 p-2.5 text-amber-700">
@@ -118,9 +120,9 @@ export function OperationsOverview({
         <Card>
           <CardContent className="flex items-center justify-between p-4">
             <div>
-              <p className="text-xs font-medium text-slate-500">Beds Turned Over</p>
+              <p className="text-xs font-medium text-slate-500">Beds Available</p>
               <p className="mt-1 text-2xl font-semibold tabular-nums text-emerald-700">
-                {completedCount}
+                {summary?.available_beds ?? "—"}
               </p>
             </div>
             <div className="rounded-md bg-emerald-50 p-2.5 text-emerald-700">
@@ -130,9 +132,9 @@ export function OperationsOverview({
         </Card>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-3">
+      <div className="grid gap-6">
         {/* Discharge Queue */}
-        <Card className="lg:col-span-2">
+        <Card>
           <CardHeader className="flex-row items-center justify-between">
             <div>
               <CardTitle>Synthetic Discharge Queue</CardTitle>
@@ -144,26 +146,26 @@ export function OperationsOverview({
           </CardHeader>
           <CardContent className="p-0">
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
+              <table className="w-full min-w-[860px] table-fixed text-left text-sm">
                 <thead className="border-b border-slate-100 bg-slate-50/70 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
                   <tr>
-                    <th className="px-5 py-3">Case</th>
-                    <th className="px-4 py-3">Status</th>
-                    <th className="px-4 py-3">Active Blockers</th>
-                    <th className="px-4 py-3">Version</th>
-                    <th className="px-4 py-3">Clearance</th>
-                    <th className="px-5 py-3 text-right">Action</th>
+                    <th className="w-[17%] px-5 py-3">Case</th>
+                    <th className="w-[15%] px-4 py-3">Status</th>
+                    <th className="w-[30%] px-4 py-3">Active Blockers</th>
+                    <th className="w-[9%] px-4 py-3">Version</th>
+                    <th className="w-[17%] px-4 py-3">Clearance</th>
+                    <th className="w-[12%] px-5 py-3 text-right">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {patients.map((p) => (
                     <tr key={p.patient_id} className="hover:bg-slate-50/60">
                       <td className="px-5 py-3.5">
-                        <div className="font-semibold text-slate-900">
+                        <div className="whitespace-nowrap font-semibold text-slate-900">
                           Patient #{p.patient_id}
                         </div>
                         <div className="text-xs text-slate-500">
-                          {p.display_name ?? "Name redacted by role policy"}
+                          {p.display_name ?? "Name not included in synthetic data"}
                         </div>
                       </td>
                       <td className="px-4 py-3.5">
@@ -185,13 +187,13 @@ export function OperationsOverview({
                           </span>
                         )}
                       </td>
-                      <td className="px-4 py-3.5 font-mono text-xs text-slate-600">
+                      <td className="whitespace-nowrap px-4 py-3.5 font-mono text-xs text-slate-600">
                         v{p.version}
                       </td>
-                      <td className="px-4 py-3.5 text-xs text-slate-500">
+                      <td className="whitespace-nowrap px-4 py-3.5 text-xs text-slate-500">
                         {formatUtcTimestamp(p.clinical_clearance_at)}
                       </td>
-                      <td className="px-5 py-3.5 text-right">
+                      <td className="whitespace-nowrap px-5 py-3.5 text-right">
                         <Button
                           size="sm"
                           variant="outline"
@@ -264,9 +266,10 @@ export function OperationsOverview({
       {/* Recharts Pipeline Stage Breakdown */}
       <Card>
         <CardHeader>
-          <CardTitle>Patient #402 Stage Readiness Breakdown</CardTitle>
+          <CardTitle>Patient #{patientId} Stage Readiness Breakdown</CardTitle>
           <CardDescription>
-            Live milestone state distribution synchronized from GET /api/patients/402/workflow
+            Live milestone state distribution synchronized from GET{" "}
+            <span className="font-mono">/api/patients/{patientId}/workflow</span>
           </CardDescription>
         </CardHeader>
         <CardContent>

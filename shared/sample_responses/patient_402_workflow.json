@@ -6,9 +6,10 @@
     {"milestone_id": "clinical_clearance", "label": "Clinical clearance", "status": "completed", "dependencies": [], "locked": false},
     {"milestone_id": "pharmacy", "label": "Pharmacy", "status": "blocked", "dependencies": ["clinical_clearance"], "locked": false},
     {"milestone_id": "insurance", "label": "Insurance authorization", "status": "blocked", "dependencies": ["clinical_clearance"], "locked": false},
-    {"milestone_id": "patient_departed", "label": "Patient departed", "status": "pending", "dependencies": ["pharmacy", "insurance"], "locked": true},
+    {"milestone_id": "transport", "label": "Transport ready", "status": "ready", "dependencies": ["clinical_clearance"], "locked": false},
+    {"milestone_id": "patient_departed", "label": "Patient departed", "status": "pending", "dependencies": ["pharmacy", "insurance", "transport"], "locked": true},
     {"milestone_id": "housekeeping_dispatched", "label": "Housekeeping dispatched", "status": "pending", "dependencies": ["patient_departed"], "locked": true},
     {"milestone_id": "bed_ready", "label": "Bed ready", "status": "pending", "dependencies": ["housekeeping_dispatched"], "locked": true}
   ],
-  "blockers": ["Pharmacy stockout", "Insurance authorization ERR_AUTH_409"]
+  "blockers": ["ERR_AUTH_409", "MEDICATION_STOCKOUT"]
 }

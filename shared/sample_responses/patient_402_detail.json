@@ -1,10 +1,11 @@
 {
   "patient_id": "402",
+  "display_name": null,
   "workflow_status": "blocked",
-  "version": 7,
+  "version": 1,
   "blockers": [
-    "Pharmacy stockout",
-    "Insurance authorization ERR_AUTH_409"
+    "ERR_AUTH_409",
+    "MEDICATION_STOCKOUT"
   ],
   "clinical_clearance_at": "2026-11-19T09:00:00Z",
   "departments": {
@@ -13,6 +14,6 @@
     "transport": "ready",
     "housekeeping": "pending"
   },
-  "clinical_summary": null,
+  "clinical_summary": "Synthetic discharge handoff. No real patient information is present.",
   "transport_required": true
 }

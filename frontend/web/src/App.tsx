@@ -1,17 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Sidebar, type NavTab } from "@/components/layout/Sidebar";
 import { TopBar } from "@/components/layout/TopBar";
 import { ApiErrorBanner } from "@/components/shared/ApiErrorBanner";
 import { ApiError, clearTurnApi } from "@/lib/api";
 import { getRoleProfile } from "@/lib/roles";
-import { AiAssistantView } from "@/pages/AiAssistantView";
-import { AuditTimelineView } from "@/pages/AuditTimelineView";
-import { ExceptionInboxView } from "@/pages/ExceptionInboxView";
-import { OperationsOverview } from "@/pages/OperationsOverview";
-import { PatientDetailView } from "@/pages/PatientDetailView";
 import type {
   AuditEventItem,
+  DashboardSummary,
   ExceptionItem,
   HealthResponse,
   PatientDetail,
@@ -20,7 +16,13 @@ import type {
   WorkflowResponse,
 } from "@/types/api";
 
-const PRIMARY_PATIENT_ID = "402";
+const DEFAULT_PATIENT_ID = "402";
+
+const AiAssistantView = lazy(() => import("@/pages/AiAssistantView").then((m) => ({ default: m.AiAssistantView })));
+const AuditTimelineView = lazy(() => import("@/pages/AuditTimelineView").then((m) => ({ default: m.AuditTimelineView })));
+const ExceptionInboxView = lazy(() => import("@/pages/ExceptionInboxView").then((m) => ({ default: m.ExceptionInboxView })));
+const OperationsOverview = lazy(() => import("@/pages/OperationsOverview").then((m) => ({ default: m.OperationsOverview })));
+const PatientDetailView = lazy(() => import("@/pages/PatientDetailView").then((m) => ({ default: m.PatientDetailView })));
 
 export function App() {
   const [activeTab, setActiveTab] = useState<NavTab>("overview");
@@ -39,6 +41,8 @@ export function App() {
   });
 
   const [patients, setPatients] = useState<PatientSummary[]>([]);
+  const [activePatientId, setActivePatientId] = useState(DEFAULT_PATIENT_ID);
+  const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null);
   const [patientDetail, setPatientDetail] = useState<PatientDetail | null>(null);
   const [workflow, setWorkflow] = useState<WorkflowResponse | null>(null);
   const [exceptions, setExceptions] = useState<ExceptionItem[]>([]);
@@ -66,15 +70,17 @@ export function App() {
     setIsRefreshing(true);
     setLoadError(null);
     try {
-      const [patientsRes, detailRes, workflowRes, exceptionsRes, auditRes] =
+      const [summaryRes, patientsRes, detailRes, workflowRes, exceptionsRes, auditRes] =
         await Promise.all([
+          clearTurnApi.getDashboardSummary(token),
           clearTurnApi.listPatients(token),
-          clearTurnApi.getPatientDetail(token, PRIMARY_PATIENT_ID),
-          clearTurnApi.getPatientWorkflow(token, PRIMARY_PATIENT_ID),
+          clearTurnApi.getPatientDetail(token, activePatientId),
+          clearTurnApi.getPatientWorkflow(token, activePatientId),
           clearTurnApi.listExceptions(token),
-          clearTurnApi.getPatientAudit(token, PRIMARY_PATIENT_ID),
+          clearTurnApi.getPatientAudit(token, activePatientId),
         ]);
 
+      setDashboardSummary(summaryRes);
       setPatients(patientsRes.items);
       setPatientDetail(detailRes);
       setWorkflow(workflowRes);
@@ -91,7 +97,7 @@ export function App() {
     } finally {
       setIsRefreshing(false);
     }
-  }, [token]);
+  }, [activePatientId, token]);
 
   useEffect(() => {
     void checkHealth();
@@ -115,6 +121,7 @@ export function App() {
         activeTab={activeTab}
         onSelectTab={setActiveTab}
         openExceptionCount={openExceptionCount}
+        patientId={activePatientId}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -141,6 +148,7 @@ export function App() {
             </div>
           )}
 
+          <Suspense fallback={<div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500">Loading workspace…</div>}>
           <AnimatePresence mode="wait">
             <motion.div
               key={`${activeTab}-${activeRole}`}
@@ -151,10 +159,15 @@ export function App() {
             >
               {activeTab === "overview" && (
                 <OperationsOverview
+                  summary={dashboardSummary}
                   patients={patients}
                   exceptions={exceptions}
-                  workflow402={workflow}
-                  onOpenPatient={() => setActiveTab("patient")}
+                  workflow={workflow}
+                  patientId={activePatientId}
+                  onOpenPatient={(patientId) => {
+                    setActivePatientId(patientId);
+                    setActiveTab("patient");
+                  }}
                   onOpenExceptions={() => setActiveTab("exceptions")}
                 />
               )}
@@ -187,10 +200,15 @@ export function App() {
               )}
 
               {activeTab === "audit" && (
-                <AuditTimelineView activeRole={activeRole} events={auditEvents} />
+                <AuditTimelineView
+                  activeRole={activeRole}
+                  patientId={activePatientId}
+                  events={auditEvents}
+                />
               )}
             </motion.div>
           </AnimatePresence>
+          </Suspense>
         </main>
       </div>
     </div>

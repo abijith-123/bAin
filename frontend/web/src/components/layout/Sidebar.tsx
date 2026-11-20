@@ -20,6 +20,7 @@ interface SidebarProps {
   activeTab: NavTab;
   onSelectTab: (tab: NavTab) => void;
   openExceptionCount: number;
+  patientId: string;
 }
 
 const NAV_ITEMS: { id: NavTab; label: string; icon: typeof LayoutDashboard }[] = [
@@ -34,6 +35,7 @@ export function Sidebar({
   activeTab,
   onSelectTab,
   openExceptionCount,
+  patientId,
 }: SidebarProps) {
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-slate-800 bg-[#0a1426] text-slate-200">
@@ -43,7 +45,7 @@ export function Sidebar({
         </div>
         <div>
           <div className="text-sm font-semibold tracking-tight text-white">
-            ClearTurn
+            bAin
           </div>
           <div className="text-[11px] text-slate-400">
             Hospital Discharge Ops
@@ -71,7 +73,7 @@ export function Sidebar({
             >
               <span className="flex items-center gap-2.5">
                 <Icon className="h-4 w-4 shrink-0" />
-                <span>{label}</span>
+              <span>{id === "patient" ? `Patient #${patientId} DAG` : label}</span>
               </span>
               {id === "exceptions" && openExceptionCount > 0 && (
                 <span className="rounded-full bg-rose-500/20 px-2 py-0.5 font-mono text-[11px] font-semibold text-rose-300">

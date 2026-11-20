@@ -21,12 +21,13 @@ interface MilestoneNodeData extends Record<string, unknown> {
 }
 
 const NODE_POSITIONS: Record<string, { x: number; y: number }> = {
-  clinical_clearance: { x: 20, y: 105 },
-  pharmacy: { x: 280, y: 20 },
-  insurance: { x: 280, y: 190 },
-  patient_departed: { x: 550, y: 105 },
-  housekeeping_dispatched: { x: 810, y: 105 },
-  bed_ready: { x: 1070, y: 105 },
+  clinical_clearance: { x: 20, y: 165 },
+  pharmacy: { x: 300, y: 20 },
+  insurance: { x: 300, y: 165 },
+  transport: { x: 300, y: 310 },
+  patient_departed: { x: 610, y: 165 },
+  housekeeping_dispatched: { x: 900, y: 165 },
+  bed_ready: { x: 1190, y: 165 },
 };
 
 const BORDER_BY_STATUS: Record<WorkflowStatus, string> = {
@@ -116,7 +117,15 @@ export function DischargeDag({
   const edges: Edge[] = useMemo(() => {
     const result: Edge[] = [];
     for (const m of milestones) {
-      for (const dep of m.dependencies) {
+      // The API enforces transport as an additional departure prerequisite
+      // when it is present in the workflow. Render that conditional gate here
+      // so the graph communicates the same safety rule as the backend.
+      const dependencies =
+        m.milestone_id === "patient_departed" &&
+        milestones.some((item) => item.milestone_id === "transport")
+          ? [...new Set([...m.dependencies, "transport"])]
+          : m.dependencies;
+      for (const dep of dependencies) {
         const satisfied = statusById.get(dep) === "completed";
         result.push({
           id: `${dep}->${m.milestone_id}`,
@@ -141,7 +150,7 @@ export function DischargeDag({
   }, [milestones, statusById]);
 
   return (
-    <div className="h-[340px] w-full overflow-hidden rounded-lg border border-slate-200 bg-slate-50/70">
+    <div className="h-[440px] w-full overflow-hidden rounded-lg border border-slate-200 bg-slate-50/70">
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -152,7 +161,6 @@ export function DischargeDag({
         nodesConnectable={false}
         elementsSelectable
         onNodeClick={(_, node) => onSelectMilestone(node.id)}
-        proOptions={{ hideAttribution: true }}
       >
         <Background gap={18} size={1} color="#cbd5e1" />
         <Controls showInteractive={false} />

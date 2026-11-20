@@ -1,21 +1,22 @@
-# Initial architecture
+# bAin architecture
 
 ## Boundary
 
-- **Streamlit (`frontend/`)** renders the dashboard and calls the API. It is not an authority for permissions or workflow safety.
-- **FastAPI (`backend/`)** authenticates demo identities, applies role checks, validates workflow transitions, and owns all state changes.
-- **Workflow rules** are deterministic Python code. The LLM may summarize, explain, and draft escalation text, but it cannot mutate state or make clinical/insurance decisions.
-- **SQLite** is the planned local simulation store. Updates that change workflow state should use transactions, expected versions, and idempotency keys.
-- **Synthetic fixtures** are the only patient-like data allowed in this repo.
+- **React + Vite (`frontend/web/`)** renders the operations dashboard and calls FastAPI. UI role checks are presentation only; backend authorization remains authoritative.
+- **FastAPI (`backend/`)** validates local synthetic demo tokens, enforces roles and workflow dependencies, and owns state changes.
+- **Workflow rules** are deterministic Python code. AI analysis is read-only and currently uses the labeled deterministic fallback; it cannot mutate state or make clinical or insurance decisions.
+- **SQLite** stores synthetic cases, independent Pharmacy/Insurance mock-service state, exceptions, idempotency records, and audit events. State changes use atomic transactions and optimistic case versions.
+- **Synthetic fixtures** are the only patient-like data allowed in this repo. Demo tokens are local configuration examples and are not production credentials.
 
 ## Draft discharge dependency graph
 
 ```text
 Clinical clearance -> Pharmacy ----+
                     -> Insurance --+-> Patient departed -> Housekeeping -> Bed ready
+                    -> Transport --+
 ```
 
-Pharmacy and insurance can proceed in parallel after clinical clearance. Patient departure requires both. Housekeeping is locked until departure is recorded. The authoritative transition rules and role matrix must be checked against the official competition brief before implementation.
+Pharmacy, Insurance, and any required Transport preparation can proceed in parallel after clinical clearance. Patient departure requires Pharmacy and Insurance completion; cases with `transport_required` also require Transport completion. Housekeeping is locked until departure is recorded.
 
 ## API boundary
 

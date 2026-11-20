@@ -7,7 +7,7 @@
       "code": "MEDICATION_STOCKOUT",
       "status": "open",
       "summary": "Medication unavailable; pharmacist review required",
-      "version": 7
+      "version": 1
     },
     {
       "exception_id": "ex-ins-402",
@@ -16,7 +16,34 @@
       "code": "ERR_AUTH_409",
       "status": "open",
       "summary": "Authorization rejected; billing specialist review required",
-      "version": 7
+      "version": 1
+    },
+    {
+      "exception_id": "ex-ph-403",
+      "patient_id": "403",
+      "department": "pharmacy",
+      "code": "MEDICATION_STOCKOUT",
+      "status": "open",
+      "summary": "Medication unavailable; pharmacist review required",
+      "version": 1
+    },
+    {
+      "exception_id": "ex-ins-404",
+      "patient_id": "404",
+      "department": "insurance",
+      "code": "ERR_AUTH_409",
+      "status": "open",
+      "summary": "Authorization rejected; billing specialist review required",
+      "version": 1
+    },
+    {
+      "exception_id": "ex-tr-405",
+      "patient_id": "405",
+      "department": "transport",
+      "code": "TRANSPORT_DELAY",
+      "status": "open",
+      "summary": "Transport availability pending; transport team confirmation required.",
+      "version": 1
     }
   ]
 }

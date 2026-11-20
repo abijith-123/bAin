@@ -4,11 +4,11 @@
 
 ## Project status
 
-This repository is an initial scaffold. The official competition brief has not yet been added, so `shared/api_contract.yaml` is a draft based on the project requirements supplied by the team. Confirm it against the official brief before treating it as final. No production workflow, authorization, persistence, or AI integration is implemented yet.
+The React dashboard and a local FastAPI simulation are available for development. The API seeds synthetic cases into SQLite, validates demo-role permissions, enforces discharge dependencies, and records versions, idempotency keys, and audit events. AI analysis currently uses a clearly labeled deterministic fallback; no external clinical, pharmacy, payer, or transport systems are connected.
 
 ## Team ownership
 
-- **Developer 1 — dashboard:** `frontend/`, `tests/frontend/`
+- **Developer 1 — dashboard:** `frontend/web/`, `tests/frontend/`
 - **Developer 2 — backend and agent:** `backend/`, `tests/backend/`
 - **Shared changes:** `shared/`, `docs/`, `tests/integration/`; coordinate before editing.
 
@@ -16,7 +16,7 @@ This repository is an initial scaffold. The official competition brief has not y
 
 ```text
 backend/                 FastAPI service and workflow engine (backend owner)
-frontend/                Streamlit operations dashboard (dashboard owner)
+frontend/web/            React + Vite operations dashboard (dashboard owner)
 shared/                  Draft API contract and contract-compatible fixtures
 docs/                    Architecture and collaboration notes
 tests/                   Frontend, backend, and integration tests
@@ -25,25 +25,46 @@ scripts/                 Local development and synthetic-data utilities
 
 ## Local setup
 
-Use Python 3.11 or newer.
+Use Python 3.11 or newer and Node.js 20 or newer.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate       # Windows: .venv\\Scripts\\activate
 pip install -r requirements.txt
+cp -n .env.example .env
+cp -n frontend/web/.env.example frontend/web/.env.local
 ```
 
-Run the API and dashboard in separate terminals:
+Run the API and dashboard in separate terminals from the repository root.
+
+Terminal 1 — API:
 
 ```bash
-uvicorn backend.main:app --reload
+source .venv/bin/activate
+set -a && source .env && set +a
+uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 ```
+
+Terminal 2 — React dashboard:
 
 ```bash
-streamlit run frontend/app.py
+cd frontend/web
+npm install
+npm run dev
 ```
 
-The current scaffold exposes only `GET /api/health`; the dashboard labels this as a scaffold connection check. Configure `BAIN_API_BASE_URL` to point the dashboard at another API host. Do not put API keys or real patient information in this repository.
+The sample role tokens are synthetic local-demo values used only by the role selector. Vite exposes its `VITE_*` values to the browser, so never put real API credentials or LLM keys in the frontend environment file. This demo authentication is not suitable for production or real patient data.
+
+Open the Vite URL shown in the terminal (normally `http://127.0.0.1:5173`). The dashboard proxies `/api` requests to FastAPI on port 8000. The SQLite simulation database is stored in the system temporary directory by default; set `BAIN_DB_PATH` to use another local path. All included cases are synthetic. Do not add real patient information or API keys to this repository.
+
+To reset the synthetic cases for a fresh demo, run `python scripts/reset_demo_db.py`. If the selected database already exists, add `--force` to confirm replacing it. See [docs/demo_plan.md](docs/demo_plan.md) for the live scenario sequence and expected safety checks.
+
+## Verification
+
+```bash
+python -m pytest -q
+cd frontend/web && npm run build
+```
 
 ## Git workflow
 

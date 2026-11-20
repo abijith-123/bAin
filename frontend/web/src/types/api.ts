@@ -134,6 +134,8 @@ export interface AuditEventItem {
   outcome: AuditOutcome;
   reason: string | null;
   version: number;
+  previous_state: string | null;
+  new_state: string | null;
 }
 
 export interface AgentActivityItem {

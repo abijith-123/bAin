@@ -3,25 +3,25 @@
     {
       "department": "pharmacy",
       "status": "blocked",
-      "open_cases": 2,
-      "blocked_cases": 1
+      "open_cases": 3,
+      "blocked_cases": 2
     },
     {
       "department": "insurance",
       "status": "blocked",
-      "open_cases": 2,
-      "blocked_cases": 1
+      "open_cases": 3,
+      "blocked_cases": 2
     },
     {
       "department": "transport",
-      "status": "in_progress",
-      "open_cases": 1,
-      "blocked_cases": 0
+      "status": "blocked",
+      "open_cases": 5,
+      "blocked_cases": 1
     },
     {
       "department": "housekeeping",
-      "status": "pending",
-      "open_cases": 1,
+      "status": "in_progress",
+      "open_cases": 5,
       "blocked_cases": 0
     }
   ]

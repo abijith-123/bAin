@@ -14,7 +14,7 @@ The OpenAPI file at `shared/api_contract.yaml` is the shared wire-format source 
 
 ## Authentication and role permissions
 
-Use a server-validated bearer token mapped to a synthetic actor and role. Never trust a caller-supplied role field. Demo tokens stay in local environment configuration and are not committed.
+Use a server-validated bearer token mapped to a synthetic actor and role. Never trust a caller-supplied role field. The API reads `BAIN_TOKEN_*` values from local environment variables; the dashboard reads matching `VITE_BAIN_TOKEN_*` demo values from its ignored local Vite environment file. These sample tokens are for synthetic local demos only, not production authentication or real patient data.
 
 | Role | State-changing permissions | Data scope |
 |---|---|---|
@@ -23,7 +23,7 @@ Use a server-validated bearer token mapped to a synthetic actor and role. Never 
 | nurse | Nurse-owned checklist or instruction sign-off when enabled | Clinical details needed for nursing work |
 | pharmacist | Update Pharmacy milestones and resolve Pharmacy exceptions | Medication details needed for review |
 | billing_specialist | Update Insurance review and resolve Insurance exceptions | Authorization and billing details needed for review |
-| transport_staff | Update transport readiness and confirm departure | Pickup and transport details; no diagnosis or clinical notes |
+| transport_staff | Update transport readiness, resolve transport-delay exceptions, and confirm departure | Pickup and transport details; no diagnosis or clinical notes |
 | housekeeping | Dispatch cleaning and mark a bed ready, after departure only | Room/bed and readiness status only |
 
 No role or AI action may autonomously modify a clinical order or override an insurer denial. A billing specialist records a human review outcome; the agent cannot treat a denial as approval.
@@ -41,7 +41,7 @@ No role or AI action may autonomously modify a clinical order or override an ins
 | GET /api/patients/{patient_id}/audit | Any authenticated role | Permission-filtered audit timeline |
 | GET /api/departments/status | Any authenticated role | Role-filtered department workload and blockers |
 | GET /api/exceptions | Assigned specialists; admin gets operational summaries | Specialist review queue |
-| POST /api/exceptions/{exception_id}/resolve | Pharmacist for Pharmacy; billing specialist for Insurance | Human resolution form and result |
+| POST /api/exceptions/{exception_id}/resolve | Assigned matching specialist: pharmacist, billing specialist, or transport staff | Human resolution form and result; resolving moves the linked milestone to `ready`, never directly to `completed` |
 | GET /api/agent/activity | Any authenticated role | Role-filtered agent activity feed |
 | POST /api/agent/analyze | Clinical or relevant specialist roles | Explain blockers and draft a targeted escalation; read-only |
 
@@ -55,7 +55,7 @@ Return 409 INVALID_TRANSITION when a DAG edge is not satisfied and 409 IDEMPOTEN
 
 ## Audit and AI boundaries
 
-Audit successful and rejected state-change attempts: timestamp, actor ID and role, case ID, action, prior/new status when permitted, outcome, rejection code, and version. Do not include raw handoff notes, full prompts, or unnecessary PHI.
+Audit successful and rejected state-change attempts: timestamp, actor ID and role, case ID, action, prior/new state, outcome, rejection code, and version. Operations administrators can see actor identity and state transitions, while free-text reasons remain redacted. Pharmacists and billing specialists see free-text reasons only for their own department. Housekeeping and transport views redact actor identity and free-text reasons. Do not include raw handoff notes, full prompts, or unnecessary PHI.
 
 The analyze endpoint is read-only. It returns generation_mode as llm or deterministic_fallback, current blockers, permitted next actions, and an optional escalation draft. Label deterministic fallback honestly. Every proposed action must be checked by backend permissions and DAG rules; Pharmacy and Insurance exceptions still require human resolution.
 
@@ -66,7 +66,7 @@ JSON fixtures under `shared/sample_responses/` use the contract's field names an
 ## Backend tool contract
 
 - `get_discharge_dag_state(patient_id)` returns current milestone statuses, dependencies, locked actions, case version, and role-filtered blockers. It is read-only.
-- `check_pharmacy_and_insurance(patient_id)` queries the two synthetic department services independently, records their separate outcomes, and opens targeted pharmacist or billing exceptions when blocked. One service failure must not erase the other result.
+- `check_pharmacy_and_insurance(patient_id)` queries the two synthetic department-service records independently and in parallel, records each outcome, and opens targeted pharmacist or billing exceptions when blocked. If one read fails, its result is `unavailable`; the other result is retained and processed.
 - `update_department_milestone(patient_id, milestone_id, target_status, actor, expected_version, idempotency_key)` is the only state-changing path. It validates the actor, DAG prerequisites, version, and idempotency key, then commits the milestone, audit record, and version atomically.
 
 The LLM may request these tools only through the backend orchestrator. It receives no direct database access; the two read tools are safe to parallelize, while writes are serialized by transaction and optimistic version checks.

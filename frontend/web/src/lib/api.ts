@@ -86,8 +86,8 @@ async function requestJson<T>(
   } catch (err) {
     const message =
       err instanceof Error
-        ? `Unable to reach ClearTurn API (${err.message}). Verify FastAPI is running.`
-        : "Unable to reach ClearTurn API.";
+        ? `Unable to reach bAin API (${err.message}). Verify FastAPI is running.`
+        : "Unable to reach bAin API.";
     throw new ApiError(0, "NETWORK_ERROR", message);
   }
 

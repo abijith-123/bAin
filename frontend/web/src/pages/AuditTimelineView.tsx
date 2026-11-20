@@ -12,10 +12,11 @@ import type { AuditEventItem, Role } from "@/types/api";
 
 interface AuditTimelineViewProps {
   activeRole: Role;
+  patientId: string;
   events: AuditEventItem[];
 }
 
-export function AuditTimelineView({ activeRole, events }: AuditTimelineViewProps) {
+export function AuditTimelineView({ activeRole, patientId, events }: AuditTimelineViewProps) {
   return (
     <div className="space-y-6">
       <div>
@@ -23,7 +24,7 @@ export function AuditTimelineView({ activeRole, events }: AuditTimelineViewProps
           Audit Timeline
         </h1>
         <p className="mt-1 text-sm text-slate-500">
-          Durable chronological ledger of accepted and rejected operations for Patient #402
+          Durable chronological ledger of accepted and rejected operations for Patient #{patientId}{" "}
           (permission-filtered for <span className="font-mono">{activeRole}</span>).
         </p>
       </div>
@@ -31,7 +32,9 @@ export function AuditTimelineView({ activeRole, events }: AuditTimelineViewProps
       <Card>
         <CardHeader className="flex-row items-center justify-between">
           <div>
-            <CardTitle>GET /api/patients/402/audit</CardTitle>
+            <CardTitle>
+              GET <span className="font-mono">/api/patients/{patientId}/audit</span>
+            </CardTitle>
             <CardDescription>
               Every successful and rejected transition is recorded atomically by FastAPI
             </CardDescription>
@@ -68,9 +71,19 @@ export function AuditTimelineView({ activeRole, events }: AuditTimelineViewProps
                             {ev.outcome}
                           </Badge>
                           <Badge variant="muted">{ev.actor_role}</Badge>
+                          {ev.actor_id && (
+                            <span className="font-mono text-[11px] text-slate-500">
+                              {ev.actor_id}
+                            </span>
+                          )}
                         </div>
                         {ev.reason && (
                           <p className="text-slate-600 leading-relaxed">{ev.reason}</p>
+                        )}
+                        {(ev.previous_state !== null || ev.new_state !== null) && (
+                          <p className="font-mono text-[11px] text-slate-500">
+                            State: {ev.previous_state ?? "—"} → {ev.new_state ?? "—"}
+                          </p>
                         )}
                       </div>
                     </div>

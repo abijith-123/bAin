@@ -108,9 +108,9 @@ export function ExceptionInboxView({
           <CardContent className="flex items-center gap-3 py-8 text-sm text-slate-600">
             <ShieldAlert className="h-5 w-5 text-slate-400" />
             <span>
-              No exceptions are visible for role <span className="font-mono">{activeRole}</span>.
-              Switch to Pharmacist, Billing Specialist, Doctor, Nurse, or Admin to inspect
-              active clinical/department escalations.
+              No open exceptions are assigned to role <span className="font-mono">{activeRole}</span>.
+              Pharmacy and insurance reviews are routed to their assigned specialists; administrators
+              can inspect all open exceptions in read-only mode.
             </span>
           </CardContent>
         </Card>
@@ -119,6 +119,10 @@ export function ExceptionInboxView({
           {exceptions.map((exc) => {
             const draft = resolutions[exc.exception_id] ?? "";
             const isOpen = exc.status === "open";
+            const canResolve =
+              (activeRole === "pharmacist" && exc.department === "pharmacy") ||
+              (activeRole === "billing_specialist" && exc.department === "insurance") ||
+              (activeRole === "transport_staff" && exc.department === "transport");
             return (
               <Card key={exc.exception_id}>
                 <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
@@ -140,7 +144,7 @@ export function ExceptionInboxView({
                     {exc.summary ?? "Specialist review required."}
                   </p>
 
-                  {isOpen ? (
+                  {isOpen && canResolve ? (
                     <div className="flex flex-col gap-2.5 sm:flex-row">
                       <input
                         type="text"
@@ -164,9 +168,14 @@ export function ExceptionInboxView({
                           : "Resolve Exception"}
                       </Button>
                     </div>
+                  ) : isOpen ? (
+                    <CardDescription>
+                      Read-only review. Only the assigned {exc.department} specialist can resolve
+                      this exception.
+                    </CardDescription>
                   ) : (
                     <CardDescription>
-                      Exception resolved and audited. Confirm the linked milestone in Patient #402
+                      Exception resolved and audited. Confirm the linked milestone in Patient #{exc.patient_id}
                       DAG to advance the discharge pipeline.
                     </CardDescription>
                   )}

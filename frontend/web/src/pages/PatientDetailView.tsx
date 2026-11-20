@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   CheckCircle2,
   Lock,
@@ -60,6 +60,15 @@ export function PatientDetailView({
     (m) => m.milestone_id === selectedMilestoneId,
   );
 
+  useEffect(() => {
+    if (!selectedMilestone) return;
+    setTargetStatus(
+      selectedMilestone.status === "ready" || selectedMilestone.status === "in_progress"
+        ? "completed"
+        : "in_progress",
+    );
+  }, [selectedMilestoneId, selectedMilestone?.status]);
+
   async function handleSubmitTransition(e: React.FormEvent) {
     e.preventDefault();
     if (!workflow || !selectedMilestone) return;
@@ -85,6 +94,7 @@ export function PatientDetailView({
         `Server confirmed ${res.milestone_id} → ${res.status} (v${res.version}, audit ${res.audit_event_id}).`,
       );
       setReason("");
+      if (targetStatus === "in_progress") setTargetStatus("completed");
       await onRefresh();
     } catch (err) {
       if (err instanceof ApiError) {
@@ -116,7 +126,10 @@ export function PatientDetailView({
             )}
           </div>
           <p className="mt-1 text-sm text-slate-500">
-            {detail?.display_name ?? "Patient name redacted for current role"} ·
+            {detail?.display_name ??
+              (activeRole === "housekeeping" || activeRole === "transport_staff"
+                ? "Patient name redacted for current role"
+                : "Name not included in synthetic data")} ·
             Clinical clearance: {formatUtcTimestamp(detail?.clinical_clearance_at)}
           </p>
         </div>
@@ -209,6 +222,13 @@ export function PatientDetailView({
               selectedMilestoneId={selectedMilestoneId}
               onSelectMilestone={(id) => {
                 setSelectedMilestoneId(id);
+                const nextMilestone = workflow?.milestones.find((item) => item.milestone_id === id);
+                setTargetStatus(
+                  nextMilestone?.status === "ready" || nextMilestone?.status === "in_progress"
+                    ? "completed"
+                    : "in_progress",
+                );
+                setReason("");
                 setActionError(null);
                 setConfirmationMsg(null);
               }}
@@ -300,13 +320,33 @@ export function PatientDetailView({
                   <Button
                     type="submit"
                     className="w-full"
-                    disabled={submitting || reason.trim().length < 3}
+                    disabled={
+                      submitting || reason.trim().length < 3 || selectedMilestone.locked ||
+                      selectedMilestone.status === "blocked" ||
+                      selectedMilestone.status === "completed"
+                    }
                   >
                     <Send className="h-3.5 w-3.5" />
                     <span>{submitting ? "Submitting…" : "Submit to Backend"}</span>
                   </Button>
                 </div>
               </form>
+
+              {selectedMilestone.locked && (
+                <p className="mt-2.5 text-[11px] text-amber-700">
+                  This milestone is locked until its required dependencies are complete.
+                </p>
+              )}
+              {selectedMilestone.status === "blocked" && (
+                <p className="mt-2.5 text-[11px] text-rose-700">
+                  Resolve the assigned specialist exception before advancing this milestone.
+                </p>
+              )}
+              {selectedMilestone.status === "completed" && (
+                <p className="mt-2.5 text-[11px] text-emerald-700">
+                  This milestone is already completed.
+                </p>
+              )}
 
               <p className="mt-2.5 text-[11px] text-slate-500">
                 Transitions are never marked complete client-side. FastAPI validates role permissions,

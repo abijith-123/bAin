@@ -10,6 +10,16 @@ export interface DemoRoleProfile {
   description: string;
 }
 
+const demoTokens = {
+  doctor: import.meta.env.VITE_BAIN_TOKEN_DOCTOR,
+  nurse: import.meta.env.VITE_BAIN_TOKEN_NURSE,
+  pharmacist: import.meta.env.VITE_BAIN_TOKEN_PHARMACIST,
+  billing_specialist: import.meta.env.VITE_BAIN_TOKEN_BILLING_SPECIALIST,
+  transport_staff: import.meta.env.VITE_BAIN_TOKEN_TRANSPORT_STAFF,
+  housekeeping: import.meta.env.VITE_BAIN_TOKEN_HOUSEKEEPING,
+  admin: import.meta.env.VITE_BAIN_TOKEN_ADMIN,
+};
+
 /**
  * Synthetic demonstration identities for local hackathon simulation.
  * The FastAPI backend validates the bearer token and enforces all permissions and redaction.
@@ -19,7 +29,7 @@ export const DEMO_ROLES: DemoRoleProfile[] = [
     role: "doctor",
     label: "Attending Physician",
     shortLabel: "Doctor",
-    demoToken: "demo-token-doctor",
+    demoToken: demoTokens.doctor,
     scopeLabel: "Clinical PHI Authorized",
     phiPolicy: "clinical_phi",
     description: "Clinical clearance authority with full synthetic clinical summary visibility.",
@@ -28,7 +38,7 @@ export const DEMO_ROLES: DemoRoleProfile[] = [
     role: "nurse",
     label: "Discharge Nurse",
     shortLabel: "Nurse",
-    demoToken: "demo-token-nurse",
+    demoToken: demoTokens.nurse,
     scopeLabel: "Clinical PHI Authorized",
     phiPolicy: "clinical_phi",
     description: "Clinical handoff visibility and authorized patient departure confirmation.",
@@ -37,7 +47,7 @@ export const DEMO_ROLES: DemoRoleProfile[] = [
     role: "pharmacist",
     label: "Clinical Pharmacist",
     shortLabel: "Pharmacist",
-    demoToken: "demo-token-pharmacist",
+    demoToken: demoTokens.pharmacist,
     scopeLabel: "Pharmacy Scope",
     phiPolicy: "departmental",
     description: "Resolves medication stockouts and confirms Pharmacy milestone completion.",
@@ -46,7 +56,7 @@ export const DEMO_ROLES: DemoRoleProfile[] = [
     role: "billing_specialist",
     label: "Billing Specialist",
     shortLabel: "Billing",
-    demoToken: "demo-token-billing",
+    demoToken: demoTokens.billing_specialist,
     scopeLabel: "Insurance Scope",
     phiPolicy: "departmental",
     description: "Resolves ERR_AUTH_409 payer exceptions and confirms Insurance clearance.",
@@ -55,7 +65,7 @@ export const DEMO_ROLES: DemoRoleProfile[] = [
     role: "transport_staff",
     label: "Patient Transport",
     shortLabel: "Transport",
-    demoToken: "demo-token-transport",
+    demoToken: demoTokens.transport_staff,
     scopeLabel: "No Clinical PHI",
     phiPolicy: "operational_only",
     description: "Confirms actual patient departure; clinical notes and diagnoses are server-redacted.",
@@ -64,7 +74,7 @@ export const DEMO_ROLES: DemoRoleProfile[] = [
     role: "housekeeping",
     label: "Environmental Services",
     shortLabel: "Housekeeping",
-    demoToken: "demo-token-housekeeping",
+    demoToken: demoTokens.housekeeping,
     scopeLabel: "Room/Bed Ops Only",
     phiPolicy: "operational_only",
     description: "Dispatches cleaning and marks bed ready after departure; zero clinical PHI exposure.",
@@ -73,7 +83,7 @@ export const DEMO_ROLES: DemoRoleProfile[] = [
     role: "admin",
     label: "Operations Admin",
     shortLabel: "Admin",
-    demoToken: "demo-token-admin",
+    demoToken: demoTokens.admin,
     scopeLabel: "Operational Overview",
     phiPolicy: "departmental",
     description: "Operational oversight and audit visibility; cannot bypass specialist or clinical gates.",
