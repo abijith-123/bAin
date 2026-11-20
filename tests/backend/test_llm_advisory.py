@@ -333,3 +333,57 @@ def test_secret_scrubbing_and_health_and_analyze_smoke(client: TestClient) -> No
             "summary", "blockers", "suggested_actions", "escalation_draft", "generation_mode"
         }
         assert data["generation_mode"] == "deterministic_fallback"
+
+
+def test_repeat_department_check_preserves_denial_upheld_and_advisory_reflects_it(
+    client: TestClient,
+) -> None:
+    # Billing specialist upholds insurance denial on synthetic case #404
+    resolve_resp = client.post(
+        "/api/exceptions/ex-ins-404/resolve",
+        headers={**_auth("billing_specialist"), "Idempotency-Key": "uphold-denial-404-key"},
+        json={
+            "resolution": "Payer denial confirmed and upheld; formal appeal required.",
+            "outcome": "denial_upheld",
+            "expected_version": 1,
+        },
+    )
+    assert resolve_resp.status_code == 200
+    resolved_body = resolve_resp.json()
+    assert resolved_body["status"] == "resolved"
+    assert resolved_body["resolution_outcome"] == "denial_upheld"
+    assert resolved_body["milestone_status"] == "blocked"
+    version_after_resolve = resolved_body["version"]
+
+    # Repeat parallel department check must NOT silently reopen the exception or clear resolution_outcome
+    check_result = api.check_pharmacy_and_insurance("404")
+    assert check_result == {"pharmacy": "completed", "insurance": "blocked"}
+
+    # Verify exception remains resolved with resolution_outcome='denial_upheld' and version unchanged
+    open_items = [
+        item for item in client.get("/api/exceptions?status=open", headers=_auth("billing_specialist")).json()["items"]
+        if item["patient_id"] == "404"
+    ]
+    assert open_items == []
+    resolved_items = [
+        item for item in client.get("/api/exceptions?status=resolved", headers=_auth("billing_specialist")).json()["items"]
+        if item["exception_id"] == "ex-ins-404"
+    ]
+    assert len(resolved_items) == 1
+    assert resolved_items[0]["resolution_outcome"] == "denial_upheld"
+
+    wf = client.get("/api/patients/404/workflow", headers=_auth("billing_specialist")).json()
+    assert wf["version"] == version_after_resolve
+    by_id = {m["milestone_id"]: m for m in wf["milestones"]}
+    assert by_id["insurance"]["status"] == "blocked"
+    assert by_id["patient_departed"]["locked"] is True
+
+    # Advisory endpoint reflects upheld denial for billing_specialist/doctor, not for pharmacist
+    bill_adv = client.post("/api/agent/analyze", headers=_auth("billing_specialist"), json={"patient_id": "404"})
+    assert bill_adv.status_code == 200
+    assert any("denial upheld" in b.lower() for b in bill_adv.json()["blockers"])
+
+    ph_adv = client.post("/api/agent/analyze", headers=_auth("pharmacist"), json={"patient_id": "404"})
+    assert ph_adv.status_code == 200
+    assert not any("denial upheld" in b.lower() for b in ph_adv.json()["blockers"])
+

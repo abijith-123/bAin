@@ -89,8 +89,22 @@ def _visible_exceptions_for_role(open_exceptions: list[dict[str, Any]], role: st
     return []
 
 
-def _role_filtered_blockers(case: dict[str, Any], visible_exceptions: list[dict[str, Any]], role: str) -> list[str]:
+def _role_filtered_blockers(
+    db: Any,
+    case: dict[str, Any],
+    visible_exceptions: list[dict[str, Any]],
+    role: str,
+) -> list[str]:
     blockers = [e["code"] for e in visible_exceptions]
+    if role in {"billing_specialist", "doctor", "nurse", "admin"}:
+        upheld = db.execute(
+            """SELECT code FROM exceptions
+               WHERE patient_id = ? AND status = 'resolved' AND resolution_outcome = 'denial_upheld'
+               ORDER BY exception_id""",
+            (case["patient_id"],),
+        ).fetchall()
+        for row in upheld:
+            blockers.append(f"{row['code']}: denial upheld; follow-up required")
     if case["milestones"].get("transport") == "blocked" and role in {"doctor", "nurse", "admin"}:
         blockers.append("Transport availability pending")
     return list(dict.fromkeys(blockers))
@@ -112,7 +126,7 @@ def build_minimized_context(
         wf_status = api.aggregate_status(db, case)
         open_excs = api.case_exceptions(db, patient_id)
         visible_excs = _visible_exceptions_for_role(open_excs, role)
-        blockers = _role_filtered_blockers(case, visible_excs, role)
+        blockers = _role_filtered_blockers(db, case, visible_excs, role)
 
         # Information minimization: never send display_name to external/local LLMs;
         # only include synthetic clinical_summary for explicitly authorized clinical roles.
@@ -190,6 +204,15 @@ def build_deterministic_advisory(context: MinimizedAdvisoryContext) -> dict[str,
             suggested_actions.append(
                 f"Authorized {dept} specialist review required for {code} ({exc_id})."
             )
+
+    if any("denial upheld" in b.lower() for b in context.blockers):
+        suggested_actions.append(
+            "Billing Specialist follow-up or payer appeal is required for the upheld insurance denial; discharge remains blocked."
+        )
+        escalation_lines.append(
+            f"[Billing Follow-Up] Synthetic case {context.patient_id}: insurance denial was upheld. "
+            "Coordinate payer appeal or alternative financial clearance before discharge can proceed."
+        )
 
     if (
         ms_by_id.get("transport", {}).get("status") == "blocked"

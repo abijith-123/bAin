@@ -674,7 +674,7 @@ def check_pharmacy_and_insurance(patient_id: str) -> dict[str, str]:
                     case["milestones"][department] = "blocked"
                     milestone_changes[department] = previous_milestone_status
                 row = db.execute(
-                    "SELECT status, version FROM exceptions WHERE exception_id=?",
+                    "SELECT status, version, resolution_outcome FROM exceptions WHERE exception_id=?",
                     (exception_id,),
                 ).fetchone()
                 if row is None:
@@ -685,9 +685,13 @@ def check_pharmacy_and_insurance(patient_id: str) -> dict[str, str]:
                         (exception_id, patient_id, department, code, summary, department, current_version),
                     )
                     exception_changes.append((exception_id, department, code, summary, None))
+                elif row["status"] == "resolved" and row["resolution_outcome"] == "denial_upheld":
+                    # Preserve human billing specialist's upheld denial decision; repeat
+                    # department checks must not silently reset review state to 'open'.
+                    continue
                 elif row["status"] != "open":
                     db.execute(
-                        "UPDATE exceptions SET status='open', version=?, summary=? WHERE exception_id=?",
+                        "UPDATE exceptions SET status='open', resolution_outcome=NULL, version=?, summary=? WHERE exception_id=?",
                         (current_version, summary, exception_id),
                     )
                     exception_changes.append((exception_id, department, code, summary, row["status"]))
