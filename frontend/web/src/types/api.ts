@@ -12,6 +12,7 @@ export type WorkflowStatus =
 
 export type Role =
   | "admin"
+  | "social_worker"
   | "doctor"
   | "nurse"
   | "pharmacist"
@@ -84,6 +85,8 @@ export interface MilestoneItem {
   label: string;
   status: WorkflowStatus;
   dependencies: string[];
+  authorized_role: Role;
+  waiting_for: string[];
   locked?: boolean;
 }
 

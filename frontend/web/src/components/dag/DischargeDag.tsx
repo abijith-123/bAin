@@ -22,6 +22,7 @@ interface MilestoneNodeData extends Record<string, unknown> {
 
 const NODE_POSITIONS: Record<string, { x: number; y: number }> = {
   clinical_clearance: { x: 20, y: 165 },
+  social_work: { x: 300, y: 455 },
   pharmacy: { x: 300, y: 20 },
   insurance: { x: 300, y: 165 },
   transport: { x: 300, y: 310 },
@@ -117,15 +118,7 @@ export function DischargeDag({
   const edges: Edge[] = useMemo(() => {
     const result: Edge[] = [];
     for (const m of milestones) {
-      // The API enforces transport as an additional departure prerequisite
-      // when it is present in the workflow. Render that conditional gate here
-      // so the graph communicates the same safety rule as the backend.
-      const dependencies =
-        m.milestone_id === "patient_departed" &&
-        milestones.some((item) => item.milestone_id === "transport")
-          ? [...new Set([...m.dependencies, "transport"])]
-          : m.dependencies;
-      for (const dep of dependencies) {
+      for (const dep of m.dependencies) {
         const satisfied = statusById.get(dep) === "completed";
         result.push({
           id: `${dep}->${m.milestone_id}`,

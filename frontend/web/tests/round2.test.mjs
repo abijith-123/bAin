@@ -48,3 +48,11 @@ test("Clock client returns reassigned IDs and surfaces API conflicts", async t =
   req.mock.mockImplementation(async () => Response.json({code:"STALE_VERSION",message:"Refresh the demo clock."},{status:409}));
   await assert.rejects(clearTurnApi.advanceClock("token",1,30,"test-stale"),/Refresh/);
 });
+
+test("Wait explanation is offered to the three supported roles", () => {
+  const workflow = {patient_id: "403", version: 1, milestones: [], blockers: []};
+  for (const role of ["housekeeping", "transport_staff", "nurse"]) {
+    assert.match(render(AiAssistantView, {activeRole: role, workflow}), /Why is this patient waiting/);
+  }
+  assert.doesNotMatch(render(AiAssistantView, {activeRole: "doctor", workflow}), /Why is this patient waiting/);
+});

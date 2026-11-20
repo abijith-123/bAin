@@ -51,3 +51,23 @@ cd frontend/web && npm run build
 ```
 
 Confirm the audit timeline shows the action, actor role, outcome, state change, and case version. AI analysis currently uses the deterministic fallback; this runbook does not represent it as an LLM response.
+
+## Round 2 patient 403 rehearsal
+
+Use a fresh disposable SQLite path for BAIN_DB_PATH and matching local backend/Vite
+demo tokens, including SOCIAL_WORKER. Patient 403 is 81 and lives alone.
+
+1. In the Exception Inbox, the pharmacist clears the stockout. In Patient Detail,
+   complete Pharmacy. As Transport, complete Transport ready.
+2. Select Patient departed. Its remaining prerequisite is Social Work clearance.
+   In the Assistant select **Why is this patient waiting?** as the nurse, Transport,
+   and Housekeeping. The nurse sees Social Work, Transport sees a pickup hold,
+   and Housekeeping sees a room-release hold.
+3. As Social Worker, select Social Work clearance, record evidence, start and
+   complete the review. Departure now unlocks.
+4. As Attending Physician, select Clinical clearance, record a reason and choose
+   **Revoke clearance**. Inspect the Audit Timeline for the invalidations at one
+   version. Booking and sign-offs must be obtained again.
+5. Re-clear as the doctor. Start and complete Pharmacy, Insurance, Transport and
+   Social Work as their respective owners. Transport confirms departure, then
+   Housekeeping dispatches and completes Bed ready.

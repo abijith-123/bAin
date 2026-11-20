@@ -26,6 +26,15 @@ const demoTokens = {
  */
 export const DEMO_ROLES: DemoRoleProfile[] = [
   {
+    role: "social_worker",
+    label: "Social Worker",
+    shortLabel: "Social Work",
+    demoToken: import.meta.env.VITE_BAIN_TOKEN_SOCIAL_WORKER,
+    scopeLabel: "Social Work clearance",
+    phiPolicy: "departmental",
+    description: "Confirms discharge support for patients requiring Social Work clearance.",
+  },
+  {
     role: "doctor",
     label: "Attending Physician",
     shortLabel: "Doctor",

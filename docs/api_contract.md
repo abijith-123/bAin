@@ -70,3 +70,23 @@ JSON fixtures under `shared/sample_responses/` use the contract's field names an
 - `update_department_milestone(patient_id, milestone_id, target_status, actor, expected_version, idempotency_key)` is the only state-changing path. It validates the actor, DAG prerequisites, version, and idempotency key, then commits the milestone, audit record, and version atomically.
 
 The LLM may request these tools only through the backend orchestrator. It receives no direct database access; the two read tools are safe to parallelize, while writes are serialized by transaction and optimistic version checks.
+
+### Round 2 conditional workflow
+
+The workflow response includes each applicable node's authorized_role and
+waiting_for (incomplete prerequisite IDs). The server reads backend/social_policy.json
+at startup. An age over 75 together with lives_alone=true adds social_work after
+clinical clearance and before departure. The social_worker identity uses the
+optional BAIN_TOKEN_SOCIAL_WORKER and matching VITE_BAIN_TOKEN_SOCIAL_WORKER.
+
+A doctor posts clinical_clearance with target_status=ready to revoke completed
+clearance before confirmed departure. This cancels downstream preparation and
+resets completed sign-offs, including transport booking. Blocked reviews retain
+their status and owner. The case, department simulation, open exception versions,
+audit events and replay response commit together. Re-clearance requires fresh
+downstream sign-offs.
+
+GET /api/patients/{patient_id}/wait-reason returns patient_id, version and answer.
+Transport receives pickup guidance, Housekeeping sees room-release guidance, and
+the nurse sees outstanding prerequisites and review blockers. The endpoint derives
+the answer from the authenticated role and a single SQLite snapshot.

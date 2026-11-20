@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 
 Role = Literal[
     "admin", "doctor", "nurse", "pharmacist", "billing_specialist",
-    "transport_staff", "housekeeping", "billing_supervisor",
+    "transport_staff", "housekeeping", "billing_supervisor", "social_worker",
 ]
 Status = Literal["pending", "ready", "in_progress", "blocked", "completed"]
 Department = Literal["pharmacy", "insurance", "transport", "housekeeping"]
@@ -53,6 +53,7 @@ def load_demo_tokens(environ: Mapping[str, str] | None = None) -> dict[str, tupl
     roles = dict(TOKEN_ENV_BY_ROLE)
     if source.get("BAIN_TOKEN_BILLING_SUPERVISOR"):
         roles["BAIN_TOKEN_BILLING_SUPERVISOR"] = "billing_supervisor"
+    roles["BAIN_TOKEN_SOCIAL_WORKER"] = "social_worker"
     return {
         token: (f"demo-{role}", role)
         for env_name, role in roles.items()
@@ -74,6 +75,8 @@ def validate_demo_tokens() -> None:
     values = [os.environ[name].strip() for name in TOKEN_ENV_BY_ROLE]
     if os.getenv("BAIN_TOKEN_BILLING_SUPERVISOR"):
         values.append(os.environ["BAIN_TOKEN_BILLING_SUPERVISOR"].strip())
+    if os.getenv("BAIN_TOKEN_SOCIAL_WORKER"):
+        values.append(os.environ["BAIN_TOKEN_SOCIAL_WORKER"].strip())
     if len(values) != len(set(values)):
         raise RuntimeError("Each BAIN_TOKEN_* demo token must have a distinct value.")
     TOKENS = load_demo_tokens()
@@ -133,10 +136,14 @@ def _case(
     *,
     transport_required: bool = True,
     clearance_at: str | None = "2026-11-19T09:00:00Z",
+    age: int | None = None,
+    lives_alone: bool | None = None,
     summary: str = "Synthetic discharge handoff. No real patient information is present.",
 ) -> dict[str, Any]:
     return {
         "patient_id": patient_id,
+        "age": age,
+        "lives_alone": lives_alone,
         "display_name": None,
         "clinical_clearance_at": clearance_at,
         "clinical_summary": summary,
@@ -156,7 +163,7 @@ def seed_cases() -> list[dict[str, Any]]:
             "clinical_clearance": "completed", "pharmacy": "blocked", "insurance": "completed",
             "transport": "ready", "patient_departed": "pending",
             "housekeeping_dispatched": "pending", "bed_ready": "pending",
-        }),
+        }, age=81, lives_alone=True),
         _case("404", {
             "clinical_clearance": "completed", "pharmacy": "completed", "insurance": "blocked",
             "transport": "ready", "patient_departed": "pending",
@@ -244,6 +251,7 @@ def init_db() -> None:
             db.execute("ALTER TABLE audit_events ADD COLUMN previous_state TEXT")
         if "new_state" not in audit_columns:
             db.execute("ALTER TABLE audit_events ADD COLUMN new_state TEXT")
+        db.execute("BEGIN IMMEDIATE")
         if db.execute("SELECT COUNT(*) FROM cases").fetchone()[0] == 0:
             for case in seed_cases():
                 db.execute(
@@ -276,6 +284,21 @@ def init_db() -> None:
         # preserving any service state that already exists in an older database.
         for row in db.execute("SELECT patient_id, payload FROM cases"):
             case = json.loads(row["payload"])
+            changed = "age" not in case or "lives_alone" not in case
+            legacy_demo = (row["patient_id"] == "403" and "age" not in case and "lives_alone" not in case
+                           and case["milestones"]["patient_departed"] != "completed")
+            if legacy_demo:
+                case.update(age=81, lives_alone=True)
+                db.execute("UPDATE cases SET version=version+1 WHERE patient_id=?", (row["patient_id"],))
+                db.execute("""UPDATE exceptions SET version=(SELECT version FROM cases WHERE patient_id=?)
+                              WHERE patient_id=? AND status='open'""", (row["patient_id"], row["patient_id"]))
+            case.setdefault("age", None)
+            case.setdefault("lives_alone", None)
+            if "social_work" in patient_dag(case) and "social_work" not in case["milestones"]:
+                case["milestones"]["social_work"] = "pending"
+                changed = True
+            if changed:
+                db.execute("UPDATE cases SET payload=? WHERE patient_id=?", (json.dumps(case), row["patient_id"]))
             for department in ("pharmacy", "insurance"):
                 db.execute(
                     "INSERT OR IGNORE INTO department_service_state VALUES (?, ?, ?)",
@@ -387,32 +410,45 @@ def aggregate_status(db: sqlite3.Connection, case: dict[str, Any]) -> str:
     return "in_progress"
 
 
-def is_locked(case: dict[str, Any], milestone_id: str) -> bool:
-    milestone = MILESTONES[milestone_id]
-    statuses = case["milestones"]
-    for dependency in milestone["dependencies"]:
-        if statuses.get(dependency) != "completed":
-            return True
-    if milestone_id == "patient_departed" and case["transport_required"]:
-        if statuses.get("transport") != "completed":
-            return True
-    return False
+class SocialPolicy(BaseModel):
+    age_over: int = Field(ge=0, le=120, strict=True)
+
+
+POLICY = SocialPolicy.model_validate_json(Path(__file__).with_name("social_policy.json").read_text())
+
+
+def patient_dag(case, policy=POLICY):
+    graph = dict(MILESTONES)
+    dependencies = list(graph["patient_departed"]["dependencies"])
+    if case["transport_required"]:
+        dependencies.append("transport")
+    else:
+        del graph["transport"]
+    age = case.get("age")
+    if type(age) is int and age > policy.age_over and case.get("lives_alone") is True:
+        graph["social_work"] = {"label": "Social Work clearance", "dependencies": ["clinical_clearance"],
+                                "role": "social_worker"}
+        dependencies.append("social_work")
+    graph["patient_departed"] = {**graph["patient_departed"], "dependencies": dependencies}
+    return graph
+
+
+def unmet(case, spec):
+    return [key for key in spec["dependencies"] if case["milestones"].get(key) != "completed"]
 
 
 def workflow_view(case: dict[str, Any], version: int, role: Role, db: sqlite3.Connection) -> dict[str, Any]:
     milestones = []
-    for milestone_id, spec in MILESTONES.items():
-        if milestone_id == "transport" and not case["transport_required"]:
-            continue
-        dependencies = list(spec["dependencies"])
-        if milestone_id == "patient_departed" and case["transport_required"]:
-            dependencies.append("transport")
+    for milestone_id, spec in patient_dag(case).items():
+        dependencies = spec["dependencies"]
         milestones.append({
             "milestone_id": milestone_id,
             "label": spec["label"],
             "status": case["milestones"][milestone_id],
             "dependencies": dependencies,
-            "locked": is_locked(case, milestone_id),
+            "locked": bool(unmet(case, spec)),
+            "waiting_for": unmet(case, spec),
+            "authorized_role": spec["role"],
         })
     return {
         "patient_id": case["patient_id"],
@@ -436,7 +472,7 @@ def summary_for(db: sqlite3.Connection, case: dict[str, Any], version: int, role
 
 def require_patient(case: dict[str, Any], role: Role) -> dict[str, Any]:
     view = dict(case)
-    if role in {"housekeeping", "transport_staff", "pharmacist", "billing_specialist", "billing_supervisor", "admin"}:
+    if role in {"social_worker", "housekeeping", "transport_staff", "pharmacist", "billing_specialist", "billing_supervisor", "admin"}:
         view["clinical_summary"] = None
     if role in {"housekeeping", "transport_staff"}:
         view["display_name"] = None
@@ -479,9 +515,8 @@ def _write_transition(
 ) -> dict[str, Any]:
     if len(idempotency_key) < 8 or len(idempotency_key) > 128:
         raise APIError(422, "VALIDATION_ERROR", "Idempotency-Key must be 8 to 128 characters.")
-    if milestone_id not in MILESTONES:
-        raise APIError(422, "VALIDATION_ERROR", "Unknown milestone identifier.")
-    if target_status not in {"in_progress", "completed"}:
+    revoking = milestone_id == "clinical_clearance" and target_status == "ready"
+    if not revoking and target_status not in {"in_progress", "completed"}:
         raise APIError(409, "INVALID_TRANSITION", "Milestones can only be advanced to in_progress or completed by a user.")
     if not reason or len(reason.strip()) < 3:
         raise APIError(422, "VALIDATION_ERROR", "A reason of at least 3 characters is required.")
@@ -501,6 +536,9 @@ def _write_transition(
             return response
 
         case, version = load_case(db, patient_id)
+        graph = patient_dag(case)
+        if milestone_id not in graph:
+            raise APIError(422, "VALIDATION_ERROR", "Milestone does not apply to this patient.")
         current = case["milestones"][milestone_id]
         if expected_version != version:
             record_audit(db, actor, patient_id, f"milestone:{milestone_id}", "rejected",
@@ -508,19 +546,21 @@ def _write_transition(
             db.commit()
             raise APIError(409, "STALE_VERSION", "The case changed. Refresh workflow state and retry with the current version.",
                            {"current_version": version})
-        if actor[1] != MILESTONES[milestone_id]["role"]:
+        if actor[1] != graph[milestone_id]["role"]:
             record_audit(db, actor, patient_id, f"milestone:{milestone_id}", "rejected",
                          "FORBIDDEN", version, current, current)
             db.commit()
             raise APIError(403, "FORBIDDEN", "Your role cannot update this milestone.")
-        if is_locked(case, milestone_id):
+        if unmet(case, graph[milestone_id]):
             record_audit(db, actor, patient_id, f"milestone:{milestone_id}", "rejected",
                          "INVALID_TRANSITION", version, current, current)
             db.commit()
-            raise APIError(409, "INVALID_TRANSITION", "Required workflow dependencies are not complete.")
+            raise APIError(409, "INVALID_TRANSITION", "Required workflow dependencies are not complete.", {"waiting_for": unmet(case, graph[milestone_id])})
 
         allowed_current = {"pending", "ready", "in_progress"} if target_status == "in_progress" else {"ready", "in_progress"}
-        if current == "completed" or current not in allowed_current:
+        if revoking:
+            allowed_current = {"completed"} if case["milestones"]["patient_departed"] != "completed" else set()
+        if current not in allowed_current:
             record_audit(db, actor, patient_id, f"milestone:{milestone_id}", "rejected",
                          "INVALID_TRANSITION", version, current, current)
             db.commit()
@@ -528,6 +568,21 @@ def _write_transition(
 
         case["milestones"][milestone_id] = target_status
         new_version = version + 1
+        if milestone_id == "clinical_clearance":
+            case["clinical_clearance_at"] = now_iso() if target_status == "completed" else None
+        if revoking:
+            for key in graph:
+                if key == milestone_id:
+                    continue
+                previous = case["milestones"][key]
+                if previous in {"blocked", "pending"}:
+                    continue
+                case["milestones"][key] = "pending"
+                record_audit(db, actor, patient_id, f"milestone:{key}:invalidated", "success",
+                             "Clinical clearance revoked", new_version, previous, "pending")
+            for department in ("pharmacy", "insurance"):
+                db.execute("UPDATE department_service_state SET status=? WHERE patient_id=? AND department=?",
+                           (case["milestones"][department], patient_id, department))
         db.execute("UPDATE cases SET version = ?, payload = ? WHERE patient_id = ? AND version = ?",
                    (new_version, json.dumps(case), patient_id, version))
         if milestone_id in {"pharmacy", "insurance"}:
@@ -629,7 +684,7 @@ def check_pharmacy_and_insurance(patient_id: str) -> dict[str, str]:
             if current_version != observed_version:
                 db.rollback()
                 continue
-            if case["milestones"]["clinical_clearance"] != "completed":
+            if any(unmet(case, patient_dag(case)[dept]) for dept in statuses):
                 raise APIError(409, "INVALID_TRANSITION", "Pharmacy and Insurance checks require clinical clearance.")
 
             milestone_changes: dict[str, str] = {}
@@ -644,7 +699,7 @@ def check_pharmacy_and_insurance(patient_id: str) -> dict[str, str]:
                     case["milestones"][department] = "blocked"
                     milestone_changes[department] = previous_milestone_status
                 row = db.execute(
-                    "SELECT status, version FROM exceptions WHERE exception_id=?",
+                    "SELECT status, version, resolution_outcome FROM exceptions WHERE exception_id=?",
                     (exception_id,),
                 ).fetchone()
                 if row is None:
@@ -655,7 +710,7 @@ def check_pharmacy_and_insurance(patient_id: str) -> dict[str, str]:
                         (exception_id, patient_id, department, code, summary, department, current_version),
                     )
                     exception_changes.append((exception_id, department, code, summary, None))
-                elif row["status"] != "open":
+                elif row["status"] != "open" and row["resolution_outcome"] != "denial_upheld":
                     db.execute(
                         "UPDATE exceptions SET status='open', version=?, summary=? WHERE exception_id=?",
                         (current_version, summary, exception_id),
@@ -804,7 +859,7 @@ def patient_audit(patient_id: str, actor: tuple[str, Role] = Depends(get_actor))
         items = []
         for row in rows:
             item = dict(row)
-            if actor[1] in {"housekeeping", "transport_staff"}:
+            if actor[1] in {"housekeeping", "transport_staff", "social_worker"}:
                 item["reason"] = None
                 item["actor_id"] = None
             elif actor[1] == "admin":
@@ -864,7 +919,7 @@ def list_exceptions(
         "pharmacist": {"pharmacy"}, "billing_specialist": {"insurance"}, "billing_supervisor": {"insurance"},
         "transport_staff": {"transport"}, "housekeeping": {"housekeeping"},
         "admin": {"pharmacy", "insurance", "transport", "housekeeping"},
-        "doctor": set(), "nurse": set(),
+        "doctor": set(), "nurse": set(), "social_worker": set(),
     }
     departments = visibility[actor[1]]
     if not departments:
@@ -948,6 +1003,8 @@ def resolve_exception(
                          exc["status"], exc["status"])
             db.commit()
             raise APIError(409, "INVALID_TRANSITION", "This exception has already been resolved.")
+        if unmet(case, patient_dag(case)[exc["linked_milestone"]]):
+            raise APIError(409, "INVALID_TRANSITION", "Complete the workflow prerequisites before resolving this exception.")
         previous_milestone_status = case["milestones"][exc["linked_milestone"]]
         milestone_status = "blocked" if payload.outcome == "denial_upheld" else "ready"
         case["milestones"][exc["linked_milestone"]] = milestone_status
@@ -990,12 +1047,50 @@ def agent_activity(actor: tuple[str, Role] = __import__("fastapi").Depends(get_a
     try:
         rows = db.execute("SELECT * FROM activity ORDER BY occurred_at DESC LIMIT 50").fetchall()
         items = [dict(row) for row in rows]
-        if actor[1] in {"housekeeping", "transport_staff"}:
+        if actor[1] in {"housekeeping", "transport_staff", "social_worker"}:
             items = [{**item, "patient_id": None, "message": "Operational workflow activity recorded."}
                      for item in items]
         return {"items": items}
     finally:
         db.close()
+
+
+@app.get("/api/patients/{patient_id}/wait-reason", tags=["workflow"])
+def wait_reason(patient_id: str, actor: tuple[str, Role] = Depends(get_actor)):
+    role = actor[1]
+    if role not in {"nurse", "transport_staff", "housekeeping"}:
+        raise APIError(403, "FORBIDDEN", "This explanation is for ward, transport and housekeeping staff.")
+    with connect() as db:
+        db.execute("BEGIN")
+        case, version = load_case(db, patient_id)
+        states = case["milestones"]
+        graph = patient_dag(case)
+        pending = unmet(case, graph["patient_departed"])
+        if role == "housekeeping":
+            if states["bed_ready"] == "completed":
+                answer = "The bed is ready."
+            elif states["housekeeping_dispatched"] == "completed":
+                answer = "Cleaning dispatch confirmed. Confirm bed readiness when cleaning is complete."
+            elif states["patient_departed"] == "completed":
+                answer = "Departure confirmed. Housekeeping may dispatch."
+            else:
+                answer = "Room release is waiting for confirmed departure. Hold cleaning dispatch."
+        elif states["patient_departed"] == "completed":
+            answer = "Patient departure has been confirmed."
+        elif role == "transport_staff":
+            if states["clinical_clearance"] != "completed":
+                answer = "Pickup is on hold. Await a new readiness confirmation."
+            elif "transport" in pending:
+                answer = "Transport readiness is pending. Confirm availability before pickup."
+            else:
+                answer = "Hold pickup until discharge prerequisites clear." if pending else "Ready for departure confirmation."
+        else:
+            labels = [graph[key]["label"] for key in pending]
+            if states["clinical_clearance"] != "completed":
+                labels.insert(0, graph["clinical_clearance"]["label"])
+            labels.extend(blockers_for(db, case, role))
+            answer = "Awaiting " + ", ".join(labels) + "." if labels else "Ready for departure confirmation."
+        return {"patient_id": patient_id, "version": version, "answer": answer}
 
 
 @app.post("/api/agent/analyze", tags=["agent"])

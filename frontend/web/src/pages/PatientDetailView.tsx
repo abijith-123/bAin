@@ -55,8 +55,13 @@ export function PatientDetailView({
   const selectedMilestone = workflow?.milestones.find(
     (m) => m.milestone_id === selectedMilestoneId,
   );
+  const canRevoke = selectedMilestone?.milestone_id === "clinical_clearance"
+    && selectedMilestone.status === "completed"
+    && workflow?.milestones.find(m => m.milestone_id === "patient_departed")?.status !== "completed";
   const nextTargetStatus: WorkflowStatus | null =
-    selectedMilestone?.status === "in_progress"
+    selectedMilestone?.authorized_role !== activeRole ? null
+      : canRevoke ? "ready"
+      : selectedMilestone?.status === "in_progress"
       ? "completed"
       : selectedMilestone?.status === "pending" || selectedMilestone?.status === "ready"
         ? "in_progress"
@@ -275,7 +280,7 @@ export function PatientDetailView({
                     Next Status
                   </span>
                   <div className="mt-1 flex h-9 items-center rounded-md border border-slate-300 bg-slate-100 px-2.5 text-xs font-medium text-slate-700">
-                    {nextTargetStatus ??
+                    {(nextTargetStatus === "ready" ? "Revoke clearance and invalidate downstream work" : nextTargetStatus) ??
                       (selectedMilestone.status === "blocked"
                         ? "Resolve exception first"
                         : "No further transition")}
@@ -307,14 +312,14 @@ export function PatientDetailView({
                     }
                   >
                     <Send className="h-3.5 w-3.5" />
-                    <span>{submitting ? "Submitting…" : "Submit to Backend"}</span>
+                    <span>{submitting ? "Submitting…" : nextTargetStatus === "ready" ? "Revoke clearance" : "Submit to Backend"}</span>
                   </Button>
                 </div>
               </form>
 
               {selectedMilestone.locked && (
                 <p className="mt-2.5 text-[11px] text-amber-700">
-                  This milestone is locked until its required dependencies are complete.
+                  Waiting for {selectedMilestone.waiting_for.join(", ")}.
                 </p>
               )}
               {selectedMilestone.status === "blocked" && (

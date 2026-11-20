@@ -29,6 +29,7 @@ export function AiAssistantView({
   token,
   workflow,
 }: AiAssistantViewProps) {
+  const [wait, setWait] = useState<{answer: string; version: number} | null>(null);
   const [note, setNote] = useState("");
   const [question, setQuestion] = useState(
     "Summarize current blockers and draft targeted specialist escalations.",
@@ -82,6 +83,18 @@ export function AiAssistantView({
         </Badge>
       </div>
 
+      {["nurse", "housekeeping", "transport_staff"].includes(activeRole) && workflow && (
+        <Card><CardContent className="space-y-3 py-4">
+          <Button onClick={async () => {
+            try {
+              setWait(await clearTurnApi.waitReason(token, workflow.patient_id));
+            } catch {
+              setWait({answer: "Unable to retrieve the current wait reason. Try again.", version: workflow.version});
+            }
+          }}>Why is this patient waiting?</Button>
+          {wait && wait.version >= workflow.version && <p aria-live="polite">{wait.answer} · v{wait.version}</p>}
+        </CardContent></Card>
+      )}
       {isOperationalOnly ? (
         <Card>
           <CardContent className="flex items-start gap-3 py-6 text-xs text-slate-600">

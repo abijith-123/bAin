@@ -117,6 +117,10 @@ async function requestJson<T>(
 }
 
 export const clearTurnApi = {
+  waitReason(token: string, patientId: string) {
+    return requestJson<{answer: string; version: number}>(
+      `/api/patients/${encodeURIComponent(patientId)}/wait-reason`, {token});
+  },
   getClock(token: string) {
     return requestJson<{clock_version: number}>("/api/demo/clock", {token});
   },

@@ -136,6 +136,27 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /api/patients/{patient_id}/wait-reason:
+    parameters:
+      - $ref: '#/components/parameters/PatientId'
+    get:
+      summary: Explain current readiness to transport, housekeeping or the ward nurse
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Deterministic read-only role-specific answer
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [patient_id, version, answer]
+                properties:
+                  patient_id: {type: string}
+                  version: {type: integer}
+                  answer: {type: string}
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /api/patients/{patient_id}/workflow:
     parameters:
       - $ref: '#/components/parameters/PatientId'
@@ -157,7 +178,7 @@ paths:
       - $ref: '#/components/parameters/PatientId'
     post:
       tags: [workflow]
-      summary: Request a permitted milestone transition
+      summary: Advance a milestone or revoke completed clinical clearance before departure by targeting ready
       description: Server-side RBAC, DAG checks, version checks, and audit logging are mandatory.
       security: [{ bearerAuth: [] }]
       parameters:
@@ -355,7 +376,7 @@ components:
       enum: [pending, ready, in_progress, blocked, completed]
     Role:
       type: string
-      enum: [admin, doctor, nurse, pharmacist, billing_specialist, billing_supervisor, transport_staff, housekeeping]
+      enum: [admin, social_worker, doctor, nurse, pharmacist, billing_specialist, billing_supervisor, transport_staff, housekeeping]
     DashboardSummary:
       type: object
       required: [generated_at, active_cases, blocked_cases, completed_today, available_beds, pending_specialist_reviews]
@@ -406,12 +427,14 @@ components:
           type: array
           items:
             type: object
-            required: [milestone_id, label, status, dependencies]
+            required: [milestone_id, label, status, dependencies, authorized_role, waiting_for, locked]
             properties:
               milestone_id: { type: string }
               label: { type: string }
               status: { $ref: '#/components/schemas/WorkflowStatus' }
               dependencies: { type: array, items: { type: string } }
+              authorized_role: { $ref: "#/components/schemas/Role" }
+              waiting_for: { type: array, items: { type: string } }
               locked: { type: boolean }
         transport_required: { type: boolean, description: Whether transport readiness is an additional departure prerequisite for this case. }
         blockers: { type: array, items: { type: string } }
