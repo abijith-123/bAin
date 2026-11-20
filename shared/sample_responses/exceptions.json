@@ -7,7 +7,11 @@
       "code": "MEDICATION_STOCKOUT",
       "status": "open",
       "summary": "Medication unavailable; pharmacist review required",
-      "version": 1
+      "version": 1,
+      "owner_role": "pharmacist",
+      "created_at": "2026-11-20T10:00:00Z",
+      "as_of": "2026-11-20T10:00:00Z",
+      "sla_minutes": null
     },
     {
       "exception_id": "ex-ins-402",
@@ -16,7 +20,11 @@
       "code": "ERR_AUTH_409",
       "status": "open",
       "summary": "Authorization rejected; billing specialist review required",
-      "version": 1
+      "version": 1,
+      "owner_role": "billing_specialist",
+      "created_at": "2026-11-20T10:00:00Z",
+      "as_of": "2026-11-20T10:00:00Z",
+      "sla_minutes": 30
     },
     {
       "exception_id": "ex-ph-403",
@@ -25,7 +33,11 @@
       "code": "MEDICATION_STOCKOUT",
       "status": "open",
       "summary": "Medication unavailable; pharmacist review required",
-      "version": 1
+      "version": 1,
+      "owner_role": "pharmacist",
+      "created_at": "2026-11-20T10:00:00Z",
+      "as_of": "2026-11-20T10:00:00Z",
+      "sla_minutes": null
     },
     {
       "exception_id": "ex-ins-404",
@@ -34,7 +46,11 @@
       "code": "ERR_AUTH_409",
       "status": "open",
       "summary": "Authorization rejected; billing specialist review required",
-      "version": 1
+      "version": 1,
+      "owner_role": "billing_specialist",
+      "created_at": "2026-11-20T10:00:00Z",
+      "as_of": "2026-11-20T10:00:00Z",
+      "sla_minutes": 30
     },
     {
       "exception_id": "ex-tr-405",
@@ -43,7 +59,11 @@
       "code": "TRANSPORT_DELAY",
       "status": "open",
       "summary": "Transport availability pending; transport team confirmation required.",
-      "version": 1
+      "version": 1,
+      "owner_role": "transport_staff",
+      "created_at": "2026-11-20T10:00:00Z",
+      "as_of": "2026-11-20T10:00:00Z",
+      "sla_minutes": null
     }
   ]
 }

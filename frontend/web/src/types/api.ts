@@ -15,6 +15,7 @@ export type Role =
   | "doctor"
   | "nurse"
   | "pharmacist"
+  | "billing_supervisor"
   | "billing_specialist"
   | "transport_staff"
   | "housekeeping";
@@ -110,6 +111,10 @@ export interface MilestoneUpdateResponse {
 }
 
 export interface ExceptionItem {
+  owner_role?: Role;
+  created_at?: string;
+  sla_minutes?: number | null;
+  as_of?: string;
   exception_id: string;
   patient_id: string;
   department: Department;
@@ -165,9 +170,11 @@ export interface AgentActivityItem {
 export interface AgentAnalyzeRequest {
   patient_id: string;
   question?: string;
+  handoff_note?: string;
 }
 
 export interface AgentAnalyzeResponse {
+  note_status: "accepted" | "absent" | "sanitized";
   summary: string;
   blockers: string[];
   suggested_actions: string[];

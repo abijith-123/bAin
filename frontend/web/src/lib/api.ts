@@ -117,6 +117,15 @@ async function requestJson<T>(
 }
 
 export const clearTurnApi = {
+  getClock(token: string) {
+    return requestJson<{clock_version: number}>("/api/demo/clock", {token});
+  },
+  advanceClock(token: string, version: number, minutes: number, key: string) {
+    return requestJson<{reassigned_exceptions: {exception_id:string}[]}>("/api/demo/clock/advance", {
+      token, method: "POST", idempotencyKey: key,
+      body: {advance_minutes: minutes, expected_clock_version: version},
+    });
+  },
   getHealth(signal?: AbortSignal): Promise<HealthResponse> {
     return requestJson<HealthResponse>("/api/health", { signal });
   },

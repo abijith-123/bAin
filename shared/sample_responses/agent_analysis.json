@@ -9,5 +9,6 @@
     "Route the medication stockout to the pharmacist for human review."
   ],
   "escalation_draft": "Please review synthetic case 402: ERR_AUTH_409, MEDICATION_STOCKOUT. Record your decision in the specialist workflow.",
-  "generation_mode": "deterministic_fallback"
+  "generation_mode": "deterministic_fallback",
+  "note_status": "absent"
 }

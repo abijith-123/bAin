@@ -33,6 +33,24 @@ export function ExceptionInboxView({
   const [actionError, setActionError] = useState<ApiError | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
+  const [minutes, setMinutes] = useState(30);
+  const [advancing, setAdvancing] = useState(false);
+  async function advance() {
+    setAdvancing(true);
+    setActionError(null);
+    setSuccessMsg(null);
+    try {
+      const clock = await clearTurnApi.getClock(token);
+      const result = await clearTurnApi.advanceClock(token, clock.clock_version, minutes, generateIdempotencyKey("clock"));
+      const ids = result.reassigned_exceptions.map(item => item.exception_id);
+      setSuccessMsg(ids.length ? "Reassigned to billing supervisor: " + ids.join(", ") : "Clock advanced. No exceptions were due.");
+      await onRefresh();
+    } catch (error) {
+      setActionError(error instanceof ApiError ? error : new ApiError(0,"INTERNAL_ERROR","Unable to advance demo time."));
+    } finally {
+      setAdvancing(false);
+    }
+  }
   const roleProfile = getRoleProfile(activeRole);
 
   async function handleResolve(exc: ExceptionItem) {
@@ -106,6 +124,8 @@ export function ExceptionInboxView({
         </div>
       )}
 
+      {activeRole === "admin" && <div><label>Simulated minutes <input type="number" min={1} max={1440} value={minutes} onChange={e => setMinutes(Number(e.target.value))}/></label>
+        <Button disabled={advancing || !Number.isInteger(minutes) || minutes < 1 || minutes > 1440} onClick={advance}>Advance demo clock</Button></div>}
       {exceptions.length === 0 ? (
         <Card>
           <CardContent className="flex items-center gap-3 py-8 text-sm text-slate-600">
@@ -124,7 +144,7 @@ export function ExceptionInboxView({
             const isOpen = exc.status === "open";
             const canResolve =
               (activeRole === "pharmacist" && exc.department === "pharmacy") ||
-              (activeRole === "billing_specialist" && exc.department === "insurance") ||
+              (exc.department === "insurance" && activeRole === exc.owner_role) ||
               (activeRole === "transport_staff" && exc.department === "transport");
             return (
               <Card key={exc.exception_id}>
@@ -134,6 +154,8 @@ export function ExceptionInboxView({
                       {exc.code}
                     </span>
                     <Badge variant={isOpen ? "danger" : "success"}>{exc.status}</Badge>
+                    <span>{exc.owner_role?.replaceAll("_", " ")}</span>
+                    {exc.sla_minutes && exc.created_at && exc.as_of && <span>{exc.owner_role === "billing_supervisor" ? "Escalated" : Math.max(0, Math.ceil(exc.sla_minutes - (Date.parse(exc.as_of)-Date.parse(exc.created_at))/60000)) + " min remaining"}</span>}
                     <Badge variant="navy">{exc.department}</Badge>
                   </div>
                   <div className="flex items-center gap-3 font-mono text-xs text-slate-500">

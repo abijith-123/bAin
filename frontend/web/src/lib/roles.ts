@@ -53,6 +53,15 @@ export const DEMO_ROLES: DemoRoleProfile[] = [
     description: "Resolves medication stockouts and confirms Pharmacy milestone completion.",
   },
   {
+    role: "billing_supervisor",
+    label: "Billing Supervisor",
+    shortLabel: "Supervisor",
+    demoToken: import.meta.env.VITE_BAIN_TOKEN_BILLING_SUPERVISOR,
+    scopeLabel: "Escalated insurance reviews",
+    phiPolicy: "departmental",
+    description: "Reviews overdue insurance exceptions.",
+  },
+  {
     role: "billing_specialist",
     label: "Billing Specialist",
     shortLabel: "Billing",

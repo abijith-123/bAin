@@ -16,6 +16,59 @@ tags:
   - name: exceptions
   - name: agent
 paths:
+  /api/demo/clock:
+    get:
+      summary: Read current simulated time as admin
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: UTC demo time and optimistic clock version
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DemoClock' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/demo/clock/advance:
+    post:
+      summary: Advance simulated time and atomically assign overdue insurance reviews as admin
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: header, name: Idempotency-Key, required: true, schema: { type: string, minLength: 8, maxLength: 128 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [advance_minutes, expected_clock_version]
+              properties:
+                advance_minutes: { type: integer, minimum: 1, maximum: 1440 }
+                expected_clock_version: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Clock and list of newly reassigned exceptions
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: '#/components/schemas/DemoClock' }
+                  - type: object
+                    required: [reassigned_exceptions]
+                    properties:
+                      reassigned_exceptions:
+                        type: array
+                        items:
+                          type: object
+                          required: [exception_id, patient_id, previous_owner_role, owner_role, version, status]
+                          properties:
+                            exception_id: { type: string }
+                            patient_id: { type: string }
+                            previous_owner_role: { const: billing_specialist }
+                            owner_role: { const: billing_supervisor }
+                            status: { const: open }
+                            version: { type: integer }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: Stale clock version or conflicting idempotency key }
+        '422': { description: Invalid minutes, version or key }
   /api/health:
     get:
       tags: [system]
@@ -263,6 +316,7 @@ paths:
               required: [patient_id]
               properties:
                 patient_id: { type: string }
+                handoff_note: { type: string, maxLength: 2000, description: Synthetic quoted material for doctor or nurse analysis }
                 question: { type: string, maxLength: 1000 }
       responses:
         '200':
@@ -277,6 +331,7 @@ paths:
                   blockers: { type: array, items: { type: string } }
                   suggested_actions: { type: array, items: { type: string } }
                   escalation_draft: { type: [string, 'null'] }
+                  note_status: { type: string, enum: [absent, accepted, sanitized] }
                   generation_mode: { type: string, enum: [llm, deterministic_fallback] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -300,7 +355,7 @@ components:
       enum: [pending, ready, in_progress, blocked, completed]
     Role:
       type: string
-      enum: [admin, doctor, nurse, pharmacist, billing_specialist, transport_staff, housekeeping]
+      enum: [admin, doctor, nurse, pharmacist, billing_specialist, billing_supervisor, transport_staff, housekeeping]
     DashboardSummary:
       type: object
       required: [generated_at, active_cases, blocked_cases, completed_today, available_beds, pending_specialist_reviews]
@@ -377,6 +432,12 @@ components:
         status: { $ref: '#/components/schemas/WorkflowStatus' }
         version: { type: integer, minimum: 1 }
         audit_event_id: { type: string }
+    DemoClock:
+      type: object
+      required: [now, clock_version]
+      properties:
+        now: { type: string, format: date-time }
+        clock_version: { type: integer, minimum: 1 }
     Exception:
       type: object
       required: [exception_id, patient_id, department, code, status, version]
@@ -388,6 +449,10 @@ components:
         status: { type: string, enum: [open, resolved] }
         summary: { type: string }
         version: { type: integer, minimum: 1 }
+        owner_role: { $ref: '#/components/schemas/Role' }
+        created_at: { type: string, format: date-time }
+        as_of: { type: string, format: date-time }
+        sla_minutes: { type: [integer, 'null'] }
         resolution_outcome: { type: [string, 'null'], enum: [cleared, denial_upheld, null] }
     AuditEvent:
       type: object
@@ -396,7 +461,7 @@ components:
         event_id: { type: string }
         occurred_at: { type: string, format: date-time }
         actor_id: { type: string }
-        actor_role: { $ref: '#/components/schemas/Role' }
+        actor_role: { anyOf: [{ $ref: '#/components/schemas/Role' }, { const: system }] }
         patient_id: { type: string }
         action: { type: string }
         outcome: { type: string, enum: [success, rejected] }

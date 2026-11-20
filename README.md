@@ -75,3 +75,11 @@ cd frontend/web && npm run build
 - Before implementation begins, review and finalize the shared contract together.
 
 See [docs/team_workflow.md](docs/team_workflow.md) and [docs/architecture.md](docs/architecture.md).
+
+### Round 2 live demo
+
+Set BAIN_TOKEN_BILLING_SUPERVISOR locally and set VITE_BAIN_TOKEN_BILLING_SUPERVISOR to the same distinct synthetic demo token before starting Vite. Demo role tokens bundled by Vite are for the synthetic local demonstration only. New insurance reviews default to a 30-minute SLA (BAIN_INSURANCE_SLA_MINUTES). The persistent clock uses UTC plus a simulated offset.
+
+Open case 402 as Nurse. Submit a synthetic note requesting insurance clearance. Inspect the advisory source and confirm the insurance exception remains open. The optional server-only Groq integration uses BAIN_LLM_PROVIDER=groq, GROQ_API_KEY and optionally GROQ_MODEL. Without a provider the dashboard reports the deterministic workflow summary.
+
+As Admin, open Exception Inbox and advance 30 minutes. Inspect the reassigned IDs. Switch to Billing Supervisor, review the exception and select denial upheld. Insurance stays blocked. Check the audit timeline for reassignment and human resolution.

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, Query, Request
+from backend.round2 import advisory, clock, migrate, reassign
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -27,7 +28,7 @@ from pydantic import BaseModel, Field
 
 Role = Literal[
     "admin", "doctor", "nurse", "pharmacist", "billing_specialist",
-    "transport_staff", "housekeeping",
+    "transport_staff", "housekeeping", "billing_supervisor",
 ]
 Status = Literal["pending", "ready", "in_progress", "blocked", "completed"]
 Department = Literal["pharmacy", "insurance", "transport", "housekeeping"]
@@ -49,9 +50,12 @@ TOKEN_ENV_BY_ROLE: dict[str, Role] = {
 
 def load_demo_tokens(environ: Mapping[str, str] | None = None) -> dict[str, tuple[str, Role]]:
     source = os.environ if environ is None else environ
+    roles = dict(TOKEN_ENV_BY_ROLE)
+    if source.get("BAIN_TOKEN_BILLING_SUPERVISOR"):
+        roles["BAIN_TOKEN_BILLING_SUPERVISOR"] = "billing_supervisor"
     return {
         token: (f"demo-{role}", role)
-        for env_name, role in TOKEN_ENV_BY_ROLE.items()
+        for env_name, role in roles.items()
         if (token := source.get(env_name, "").strip())
     }
 
@@ -68,6 +72,8 @@ def validate_demo_tokens() -> None:
             + ". Set them from .env.example before starting FastAPI."
         )
     values = [os.environ[name].strip() for name in TOKEN_ENV_BY_ROLE]
+    if os.getenv("BAIN_TOKEN_BILLING_SUPERVISOR"):
+        values.append(os.environ["BAIN_TOKEN_BILLING_SUPERVISOR"].strip())
     if len(values) != len(set(values)):
         raise RuntimeError("Each BAIN_TOKEN_* demo token must have a distinct value.")
     TOKENS = load_demo_tokens()
@@ -104,6 +110,7 @@ class ResolveRequest(BaseModel):
 
 
 class AnalyzeRequest(BaseModel):
+    handoff_note: str | None = Field(default=None,max_length=2000)
     patient_id: str = Field(min_length=1, max_length=64)
     question: str | None = Field(default=None, max_length=1000)
 
@@ -227,6 +234,7 @@ def init_db() -> None:
             );
         """)
         exception_columns = {row["name"] for row in db.execute("PRAGMA table_info(exceptions)")}
+        migrate(db)
         if "resolution_outcome" not in exception_columns:
             db.execute("ALTER TABLE exceptions ADD COLUMN resolution_outcome TEXT")
         # Additive migration for local databases created before state snapshots
@@ -353,10 +361,10 @@ def blockers_for(db: sqlite3.Connection, case: dict[str, Any], role: Role) -> li
             continue
         if role == "pharmacist" and exc["department"] == "insurance":
             blockers.append("Another specialist review is pending")
-        elif role == "billing_specialist" and exc["department"] == "pharmacy":
+        elif role in {"billing_specialist","billing_supervisor"} and exc["department"] == "pharmacy":
             blockers.append("Another specialist review is pending")
         else:
-            blockers.append(exc["code"] if role in {"doctor", "nurse", "admin", "pharmacist", "billing_specialist"} else "Specialist review pending")
+            blockers.append(exc["code"] if role in {"doctor", "nurse", "admin", "pharmacist", "billing_specialist", "billing_supervisor"} else "Specialist review pending")
     upheld = db.execute(
         "SELECT department, code FROM exceptions WHERE patient_id = ? AND status = 'resolved' AND resolution_outcome = 'denial_upheld'",
         (case["patient_id"],),
@@ -364,7 +372,7 @@ def blockers_for(db: sqlite3.Connection, case: dict[str, Any], role: Role) -> li
     for exc in upheld:
         if role in {"transport_staff", "housekeeping"}:
             blockers.append("Specialist follow-up required")
-        elif role in {"billing_specialist", "doctor", "nurse", "admin"}:
+        elif role in {"billing_specialist", "billing_supervisor", "doctor", "nurse", "admin"}:
             blockers.append(f"{exc['code']}: denial upheld; follow-up required")
     if case["milestones"].get("transport") == "blocked":
         blockers.append("Transport availability pending")
@@ -428,7 +436,7 @@ def summary_for(db: sqlite3.Connection, case: dict[str, Any], version: int, role
 
 def require_patient(case: dict[str, Any], role: Role) -> dict[str, Any]:
     view = dict(case)
-    if role in {"housekeeping", "transport_staff", "pharmacist", "billing_specialist", "admin"}:
+    if role in {"housekeeping", "transport_staff", "pharmacist", "billing_specialist", "billing_supervisor", "admin"}:
         view["clinical_summary"] = None
     if role in {"housekeeping", "transport_staff"}:
         view["display_name"] = None
@@ -807,7 +815,7 @@ def patient_audit(patient_id: str, actor: tuple[str, Role] = Depends(get_actor))
                 ":pharmacy" in item["action"] or ":ex-ph-" in item["action"]
             ):
                 item["reason"] = None
-            elif actor[1] == "billing_specialist" and not (
+            elif actor[1] in {"billing_specialist","billing_supervisor"} and not (
                 ":insurance" in item["action"] or ":ex-ins-" in item["action"]
             ):
                 item["reason"] = None
@@ -840,7 +848,7 @@ def departments_status(actor: tuple[str, Role] = Depends(get_actor)) -> dict[str
             items = [item for item in items if item["department"] == "transport"]
         elif actor[1] == "pharmacist":
             items = [item for item in items if item["department"] == "pharmacy"]
-        elif actor[1] == "billing_specialist":
+        elif actor[1] in {"billing_specialist","billing_supervisor"}:
             items = [item for item in items if item["department"] == "insurance"]
         return {"items": items}
     finally:
@@ -853,7 +861,7 @@ def list_exceptions(
     actor: tuple[str, Role] = Depends(get_actor),
 ) -> dict[str, Any]:
     visibility = {
-        "pharmacist": {"pharmacy"}, "billing_specialist": {"insurance"},
+        "pharmacist": {"pharmacy"}, "billing_specialist": {"insurance"}, "billing_supervisor": {"insurance"},
         "transport_staff": {"transport"}, "housekeeping": {"housekeeping"},
         "admin": {"pharmacy", "insurance", "transport", "housekeeping"},
         "doctor": set(), "nurse": set(),
@@ -863,6 +871,9 @@ def list_exceptions(
         return {"items": []}
     db = connect()
     try:
+        db.execute("BEGIN IMMEDIATE")
+        current = clock(db)
+        reassign(db,current["now"],record_audit)
         query = "SELECT * FROM exceptions WHERE department IN (" + ",".join("?" for _ in departments) + ")"
         params: list[Any] = list(departments)
         if status:
@@ -871,10 +882,14 @@ def list_exceptions(
         query += " ORDER BY patient_id, exception_id"
         items = []
         for row in db.execute(query, params):
-            item = {key: row[key] for key in ("exception_id", "patient_id", "department", "code", "status", "summary", "version", "resolution_outcome")}
+            if actor[1] == "billing_supervisor" and row["owner_role"] != actor[1]:
+                continue
+            item = {key: row[key] for key in ("owner_role","created_at","sla_minutes","exception_id", "patient_id", "department", "code", "status", "summary", "version", "resolution_outcome")}
             if actor[1] == "admin":
                 item["summary"] = "Specialist review required; operational summary only."
+            item["as_of"] = current["now"]
             items.append(item)
+        db.commit()
         return {"items": items}
     finally:
         db.close()
@@ -902,6 +917,7 @@ def resolve_exception(
             response = json.loads(prior["response_json"])
             db.commit()
             return response
+        reassign(db,clock(db)["now"],record_audit)
         exc = db.execute("SELECT * FROM exceptions WHERE exception_id=?", (exception_id,)).fetchone()
         if exc is None:
             raise APIError(404, "NOT_FOUND", "Exception was not found.")
@@ -912,7 +928,7 @@ def resolve_exception(
             "insurance": "billing_specialist",
             "transport": "transport_staff",
         }.get(exc["department"])
-        if actor[1] != expected_role:
+        if actor[1] != (exc["owner_role"] or expected_role):
             record_audit(db, actor, exc["patient_id"], f"exception:{exception_id}:resolve",
                          "rejected", "FORBIDDEN", exc["version"], exc["status"], exc["status"])
             db.commit()
@@ -995,7 +1011,7 @@ def analyze_case(
         open_exceptions = case_exceptions(db, payload.patient_id)
         allowed = [e for e in open_exceptions if actor[1] in {"doctor", "nurse", "admin"}
                    or (actor[1] == "pharmacist" and e["department"] == "pharmacy")
-                   or (actor[1] == "billing_specialist" and e["department"] == "insurance")
+                   or (actor[1] in {"billing_specialist","billing_supervisor"} and e["department"] == "insurance")
                    or (actor[1] == "transport_staff" and e["department"] == "transport")]
         blockers = [e["code"] for e in allowed]
         if case["milestones"]["transport"] == "blocked":
@@ -1005,7 +1021,8 @@ def analyze_case(
             if exc["department"] == "pharmacy":
                 actions.append("Route the medication stockout to the pharmacist for human review.")
             elif exc["department"] == "insurance":
-                actions.append("Route ERR_AUTH_409 to the billing specialist for human review.")
+                owner = exc["owner_role"].replace("_", " ")
+                actions.append(f"Route {exc['code']} to the {owner} for human review.")
             elif exc["department"] == "transport":
                 actions.append("Route the transport delay to the transport specialist for human review.")
         if case["milestones"]["transport"] == "blocked":
@@ -1018,17 +1035,59 @@ def analyze_case(
             if blockers else
             f"Synthetic case {payload.patient_id} has no visible blockers. Continue with the next authorized workflow step."
         )
+        if payload.handoff_note and actor[1] not in {"nurse","doctor"}:
+            raise APIError(403,"FORBIDDEN","Clinical notes require a clinical role.")
+        generated,note_status = advisory(payload.handoff_note or "",blockers)
+        mode = "llm" if generated else "deterministic_fallback"
+        if generated:
+            summary += " Note summary: " + generated
         draft = None
         if allowed:
             codes = ", ".join(e["code"] for e in allowed)
             draft = f"Please review synthetic case {payload.patient_id}: {codes}. Record your decision in the specialist workflow."
         db.execute("INSERT INTO activity VALUES (?, ?, ?, ?, ?, ?)",
                    (f"act-{uuid.uuid4().hex[:10]}", now_iso(), payload.patient_id, "summary",
-                    "Deterministic fallback summarized current workflow blockers.", "deterministic_fallback"))
+                    "Workflow advisory generated.", mode))
         return {
             "summary": summary, "blockers": blockers,
             "suggested_actions": actions, "escalation_draft": draft,
-            "generation_mode": "deterministic_fallback",
+            "generation_mode": mode, "note_status":note_status,
         }
     finally:
         db.close()
+
+
+class ClockAdvance(BaseModel):
+    advance_minutes: int = Field(gt=0, le=1440, strict=True)
+    expected_clock_version: int = Field(ge=1)
+
+
+@app.get("/api/demo/clock")
+def get_clock(actor=Depends(get_actor)):
+    if actor[1] != "admin":
+        raise APIError(403,"FORBIDDEN","Admin role required.")
+    with connect() as db:
+        return clock(db)
+
+
+@app.post("/api/demo/clock/advance")
+def advance_clock(payload: ClockAdvance, actor=Depends(get_actor),
+                  idempotency_key: str = Header(alias="Idempotency-Key",min_length=8,max_length=128)):
+    if actor[1] != "admin":
+        raise APIError(403,"FORBIDDEN","Admin role required.")
+    fingerprint = "advance:" + payload.model_dump_json()
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        prior = db.execute("SELECT * FROM idempotency WHERE key=?",(idempotency_key,)).fetchone()
+        if prior:
+            if prior["request_hash"] != fingerprint or prior["actor_id"] != actor[0]:
+                raise APIError(409,"IDEMPOTENCY_CONFLICT","Clock request key already used.")
+            return json.loads(prior["response_json"])
+        result = db.execute("UPDATE demo_clock SET offset_minutes=offset_minutes+?,version=version+1 WHERE id=1 AND version=?",
+                            (payload.advance_minutes,payload.expected_clock_version))
+        if not result.rowcount:
+            raise APIError(409,"STALE_VERSION","Refresh the demo clock.")
+        response = clock(db)
+        response["reassigned_exceptions"] = reassign(db,response["now"],record_audit)
+        db.execute("INSERT INTO idempotency VALUES(?,?,?,?)",(idempotency_key,actor[0],fingerprint,json.dumps(response)))
+        return response

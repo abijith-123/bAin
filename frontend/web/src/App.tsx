@@ -184,7 +184,7 @@ export function App() {
               )}
 
               {activeTab === "exceptions" && (
-                <ExceptionInboxView
+                <ExceptionInboxView key={activeRole + activePatientId}
                   activeRole={activeRole}
                   token={token}
                   exceptions={exceptions}
@@ -193,7 +193,7 @@ export function App() {
               )}
 
               {activeTab === "assistant" && (
-                <AiAssistantView
+                <AiAssistantView key={activeRole + activePatientId}
                   activeRole={activeRole}
                   token={token}
                   workflow={workflow}

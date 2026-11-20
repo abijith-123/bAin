@@ -29,6 +29,7 @@ export function AiAssistantView({
   token,
   workflow,
 }: AiAssistantViewProps) {
+  const [note, setNote] = useState("");
   const [question, setQuestion] = useState(
     "Summarize current blockers and draft targeted specialist escalations.",
   );
@@ -46,6 +47,7 @@ export function AiAssistantView({
     try {
       const res = await clearTurnApi.analyzeCase(token, {
         patient_id: workflow?.patient_id ?? "402",
+        handoff_note: note || undefined,
         question: question.trim() || undefined,
       });
       setAnalysis(res);
@@ -113,6 +115,10 @@ export function AiAssistantView({
                   placeholder="Ask for a role-filtered blocker summary or escalation draft..."
                   className="h-9 flex-1 rounded-md border border-slate-300 bg-white px-3 text-xs text-slate-900 focus:border-[#0f1d36] focus:outline-none"
                 />
+                {(activeRole === "doctor" || activeRole === "nurse") &&
+                  <label>Synthetic handoff note
+                    <textarea value={note} maxLength={2000} onChange={e => setNote(e.target.value)} placeholder="Quoted source material for a read-only summary"/>
+                  </label>}
                 <Button type="submit" disabled={loading}>
                   <Sparkles className="h-3.5 w-3.5" />
                   <span>{loading ? "Analyzing…" : "Run Advisory Analysis"}</span>
@@ -136,6 +142,7 @@ export function AiAssistantView({
                     </Badge>
                   </div>
                   <p className="leading-relaxed text-slate-700">{analysis.summary}</p>
+                  {analysis.note_status !== "absent" && <p>Handoff note: {analysis.note_status}</p>}
                   {analysis.escalation_draft && (
                     <div className="rounded-md border border-slate-200 bg-white p-3">
                       <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
