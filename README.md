@@ -24,7 +24,7 @@ flowchart TD
 
 All applicable incoming dependencies must be complete before a milestone can advance. The FastAPI backend enforces that directed acyclic graph (DAG) and the role permitted to act at each step. Pharmacy and Insurance mock checks can run concurrently. SQLite serializes writes, checks the version for each change, and records the new state and audit event together. A stale request returns `409 STALE_VERSION`. The audit timeline shows the actor’s role, the outcome, and the case version.
 
-The **AI Assistant** on `main` uses a labeled deterministic fallback to summarize visible blockers, suggest the next staff action, and draft escalation text. Specialists record decisions through the workflow. Transport and Housekeeping receive operational views with clinical notes, patient names, and clearance timestamps redacted.
+The **AI Assistant** summarizes visible blockers, suggests staff actions, and drafts escalation text. By default it uses the labeled `deterministic_fallback` mode. An optional model receives a role-filtered summary and its response is validated before display. Workflow changes go through the FastAPI rules and authorized staff actions. Transport and Housekeeping receive operational views with clinical notes, patient names, and clearance timestamps redacted.
 
 ## Explore a scenario
 
@@ -57,7 +57,7 @@ The dashboard disables the dispatch action. The backend also rejects a premature
 
 ## Run locally
 
-Install **Python 3.11+** and **Node.js 20+** with npm. Expand the instructions for your operating system and start each terminal from the repository root. The API seeds SQLite on first startup. The demo runs offline after dependencies are installed.
+Install **Python 3.11+** and **Node.js 20+** with npm. Expand the instructions for your operating system and start each terminal from the repository root. The API seeds SQLite on first startup. With the default provider setting, the demo runs offline after dependencies are installed.
 
 <details>
 <summary><strong>Windows PowerShell</strong></summary>
@@ -108,6 +108,21 @@ npm run dev
 Open the [dashboard](http://127.0.0.1:5173/) and look for **API Online**. If Vite selects a different port, use the URL printed in your terminal. Vite proxies `/api` to FastAPI on port `8000`. You can check the [health endpoint](http://127.0.0.1:8000/api/health) or explore the [interactive API reference](http://127.0.0.1:8000/docs).
 
 <details>
+<summary><strong>Configure an optional model for the AI Assistant</strong></summary>
+
+Set `BAIN_LLM_PROVIDER` and the corresponding settings in the backend `.env`, then restart FastAPI. The default in [`.env.example`](.env.example) is `disabled`.
+
+| Provider setting | Configuration |
+| --- | --- |
+| `groq` | Set `GROQ_API_KEY`. Use `BAIN_GROQ_MODEL` to choose the model. |
+| `gemini` | Set `GEMINI_API_KEY`. Use `BAIN_GEMINI_MODEL` to choose the model. |
+| `ollama` | Start Ollama with a locally installed model and set `BAIN_OLLAMA_MODEL`. Set `BAIN_OLLAMA_BASE_URL` if the service uses a different address. |
+
+The assistant labels model responses `llm` and uses `deterministic_fallback` when the provider is disabled, unavailable, or returns invalid output. Keep provider keys in the backend `.env` and use synthetic case data in all modes.
+
+</details>
+
+<details>
 <summary><strong>Troubleshoot startup or reset the demo</strong></summary>
 
 **API shows offline.** Check that FastAPI is running on port `8000`. Open the [health endpoint](http://127.0.0.1:8000/api/health) to confirm the backend is responding.
@@ -149,6 +164,7 @@ Use synthetic records throughout. The role selector uses local demo tokens, and 
 | --- | --- |
 | [`frontend/web/`](frontend/web/) | React, TypeScript, and Vite dashboard |
 | [`backend/main.py`](backend/main.py) | FastAPI routes, demo seed data, role checks, mock department reads, and SQLite workflow updates |
+| [`backend/llm_advisory.py`](backend/llm_advisory.py) | Role-filtered advisory input, provider adapters, output validation, and deterministic fallback |
 | [`shared/api_contract.yaml`](shared/api_contract.yaml) | Shared API contract and [sample payloads](shared/sample_responses/) |
 | [`tests/backend/`](tests/backend/) | Workflow, privacy, exception, concurrency, and audit tests |
 | [`scripts/reset_demo_db.py`](scripts/reset_demo_db.py) | Local synthetic database reset |

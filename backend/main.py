@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import tempfile
 import uuid
@@ -23,6 +24,8 @@ from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+
+from backend.llm_advisory import AdvisoryProvider, AdvisoryService
 
 
 Role = Literal[
@@ -106,6 +109,41 @@ class ResolveRequest(BaseModel):
 class AnalyzeRequest(BaseModel):
     patient_id: str = Field(min_length=1, max_length=64)
     question: str | None = Field(default=None, max_length=1000)
+
+
+ADVISORY_PROVIDER: AdvisoryProvider | None = None
+_SECRET_PATTERNS = (
+    re.compile(r"(Bearer\s+)[A-Za-z0-9._\-]+", re.IGNORECASE),
+    re.compile(r"\b(sk-|gsk_|AIza)[A-Za-z0-9_\-]{6,}\b"),
+)
+
+
+def _scrub_activity_message(message: str) -> str:
+    cleaned = _SECRET_PATTERNS[0].sub(r"\1[REDACTED]", message)
+    cleaned = _SECRET_PATTERNS[1].sub("[REDACTED]", cleaned)
+    return cleaned.strip()[:1000]
+
+
+def record_activity(
+    *,
+    patient_id: str | None,
+    activity_type: str,
+    message: str,
+    generation_mode: str | None = None,
+) -> str:
+    activity_id = f"act-{uuid.uuid4().hex[:10]}"
+    db = connect()
+    try:
+        db.execute(
+            """INSERT INTO activity
+               (activity_id, occurred_at, patient_id, activity_type, message, generation_mode)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (activity_id, now_iso(), patient_id, activity_type,
+             _scrub_activity_message(message), generation_mode),
+        )
+        return activity_id
+    finally:
+        db.close()
 
 
 def now_iso() -> str:
@@ -636,7 +674,7 @@ def check_pharmacy_and_insurance(patient_id: str) -> dict[str, str]:
                     case["milestones"][department] = "blocked"
                     milestone_changes[department] = previous_milestone_status
                 row = db.execute(
-                    "SELECT status, version FROM exceptions WHERE exception_id=?",
+                    "SELECT status, version, resolution_outcome FROM exceptions WHERE exception_id=?",
                     (exception_id,),
                 ).fetchone()
                 if row is None:
@@ -647,9 +685,13 @@ def check_pharmacy_and_insurance(patient_id: str) -> dict[str, str]:
                         (exception_id, patient_id, department, code, summary, department, current_version),
                     )
                     exception_changes.append((exception_id, department, code, summary, None))
+                elif row["status"] == "resolved" and row["resolution_outcome"] == "denial_upheld":
+                    # Preserve human billing specialist's upheld denial decision; repeat
+                    # department checks must not silently reset review state to 'open'.
+                    continue
                 elif row["status"] != "open":
                     db.execute(
-                        "UPDATE exceptions SET status='open', version=?, summary=? WHERE exception_id=?",
+                        "UPDATE exceptions SET status='open', resolution_outcome=NULL, version=?, summary=? WHERE exception_id=?",
                         (current_version, summary, exception_id),
                     )
                     exception_changes.append((exception_id, department, code, summary, row["status"]))
@@ -987,48 +1029,9 @@ def analyze_case(
     payload: AnalyzeRequest,
     actor: tuple[str, Role] = Depends(get_actor),
 ) -> dict[str, Any]:
-    if actor[1] in {"transport_staff", "housekeeping"}:
-        raise APIError(403, "FORBIDDEN", "This role is not authorized for clinical advisory analysis.")
-    db = connect()
-    try:
-        case, _ = load_case(db, payload.patient_id)
-        open_exceptions = case_exceptions(db, payload.patient_id)
-        allowed = [e for e in open_exceptions if actor[1] in {"doctor", "nurse", "admin"}
-                   or (actor[1] == "pharmacist" and e["department"] == "pharmacy")
-                   or (actor[1] == "billing_specialist" and e["department"] == "insurance")
-                   or (actor[1] == "transport_staff" and e["department"] == "transport")]
-        blockers = [e["code"] for e in allowed]
-        if case["milestones"]["transport"] == "blocked":
-            blockers.append("Transport availability pending")
-        actions = []
-        for exc in allowed:
-            if exc["department"] == "pharmacy":
-                actions.append("Route the medication stockout to the pharmacist for human review.")
-            elif exc["department"] == "insurance":
-                actions.append("Route ERR_AUTH_409 to the billing specialist for human review.")
-            elif exc["department"] == "transport":
-                actions.append("Route the transport delay to the transport specialist for human review.")
-        if case["milestones"]["transport"] == "blocked":
-            actions.append("Contact patient transport to confirm availability.")
-        if not actions:
-            actions.append("Review the current workflow milestones and proceed only with role-authorized steps.")
-        summary = (
-            f"Synthetic case {payload.patient_id} has {len(blockers)} visible blocker(s). "
-            "Discharge cannot advance until required human reviews and milestones are complete."
-            if blockers else
-            f"Synthetic case {payload.patient_id} has no visible blockers. Continue with the next authorized workflow step."
-        )
-        draft = None
-        if allowed:
-            codes = ", ".join(e["code"] for e in allowed)
-            draft = f"Please review synthetic case {payload.patient_id}: {codes}. Record your decision in the specialist workflow."
-        db.execute("INSERT INTO activity VALUES (?, ?, ?, ?, ?, ?)",
-                   (f"act-{uuid.uuid4().hex[:10]}", now_iso(), payload.patient_id, "summary",
-                    "Deterministic fallback summarized current workflow blockers.", "deterministic_fallback"))
-        return {
-            "summary": summary, "blockers": blockers,
-            "suggested_actions": actions, "escalation_draft": draft,
-            "generation_mode": "deterministic_fallback",
-        }
-    finally:
-        db.close()
+    service = AdvisoryService(provider=ADVISORY_PROVIDER)
+    return service.analyze_case(
+        patient_id=payload.patient_id,
+        role=actor[1],
+        question=payload.question,
+    )
