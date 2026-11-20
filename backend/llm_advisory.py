@@ -29,18 +29,112 @@ DEFAULT_TIMEOUT_SECONDS = 8.0
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
 
-# Patterns matching affirmative unsafe directives (must not trigger on negated safety reminders).
-_NEGATION_PREFIX = r"(?:do\s+not|don't|never|cannot|can't|must\s+not|not\s+permitted\s+to|prohibited\s+from|unable\s+to|without)\s+"
-_UNSAFE_DIRECTIVE_PATTERNS = (
-    re.compile(r"\bauto[- ]?approv(?:e|ing|al)\b", re.IGNORECASE),
-    re.compile(r"\boverride\s+(?:the\s+)?(?:insurance|payer|insurer|denial|err_auth_409|clinical\s+order|pharmacist|billing)\b", re.IGNORECASE),
-    re.compile(r"\bbypass\s+(?:the\s+)?(?:pharmacist|billing|specialist|human|departure|dag|review|approval|gate)\b", re.IGNORECASE),
-    re.compile(r"\bdispatch\s+housekeeping\s+(?:immediately|now|before\s+(?:patient\s+)?departure)\b", re.IGNORECASE),
-    re.compile(r"\b(?:alter|modify|change|cancel)\s+(?:the\s+)?clinical\s+order\b", re.IGNORECASE),
-    re.compile(r"\bauto[- ]?(?:confirm|complete|mark)\s+(?:patient\s+)?departure\b", re.IGNORECASE),
-    re.compile(r"\bauto[- ]?resolve\s+(?:the\s+)?(?:exception|stockout|err_auth_409|insurance|pharmacy)\b", re.IGNORECASE),
+# Direct negation markers that negate only the immediately following verb phrase.
+_DIRECT_NEGATION_RE = re.compile(
+    r"(?:^|[\s,;:(])"
+    r"(?:do\s+not|don't|does\s+not|doesn't|did\s+not|didn't|"
+    r"never|cannot|can't|can\s+not|could\s+not|couldn't|"
+    r"must\s+not|mustn't|should\s+not|shouldn't|will\s+not|won't|"
+    r"may\s+not|not\s+permitted\s+to|not\s+allowed\s+to|prohibited\s+from|"
+    r"unable\s+to|refuse\s+to|decline\s+to|avoid)\s+"
+    r"(?:ever\s+|simply\s+|just\s+|directly\s+|manually\s+|automatically\s+|"
+    r"(?:be|been)\s+|(?:attempt|try|seek|proceed)\s+to\s+){0,2}$",
+    re.IGNORECASE,
 )
-_NEGATED_WINDOW_RE = re.compile(_NEGATION_PREFIX + r"[^.;!\n]{0,40}$", re.IGNORECASE)
+
+# Disjunctive list continuation allowed ONLY after an already-negated unsafe directive in the same sentence.
+_NEGATED_LIST_CONTINUATION_RE = re.compile(
+    r"^(?:[^.!?\n;]{0,35}?)(?:,\s*(?:or|nor)\s+|\s+(?:or|nor)\s+|,\s+)"
+    r"(?:ever\s+|simply\s+|just\s+|directly\s+|manually\s+|automatically\s+|to\s+|be\s+)?$",
+    re.IGNORECASE,
+)
+_CLAUSE_BREAK_WORD_RE = re.compile(
+    r"\b(?:and|but|then|yet|while|whereas|however|instead|rather|otherwise|if|unless|when|because)\b",
+    re.IGNORECASE,
+)
+
+_UNSAFE_DIRECTIVE_PATTERNS = (
+    re.compile(
+        r"\bauto[- ]?approv(?:e|ing|al|ed)\b|\bautomatically\s+approv(?:e|ing|ed)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:overrid(?:e|ing|den)|ignor(?:e|ing)|disregard(?:ing)?|waiv(?:e|ing))\s+"
+        r"(?:the\s+)?(?:insurance|payer|insurer|denial|err_auth_409|clinical\s+order|pharmacist|billing|exception)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:insurance|payer|insurer|denial|err_auth_409|clinical\s+order)\b"
+        r"[^.!?\n;]{0,25}\b(?:be\s+)?overridden\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:bypass(?:ing)?|skip(?:ping)?|circumvent(?:ing)?)\s+"
+        r"(?:the\s+)?(?:pharmacist|billing|specialist|human|departure|dag|review|approval|gate)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:alter(?:ing)?|modif(?:y|ying)|chang(?:e|ing)|cancel(?:ing|ling)?|discontinu(?:e|ing))\s+"
+        r"(?:the\s+)?(?:clinical|medication|prescription)\s+order\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:auto[- ]?|automatically\s+)(?:confirm|complete|mark|record)(?:ing|ed)?\s+"
+        r"(?:the\s+)?(?:patient\s+)?departure\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:auto[- ]?|automatically\s+)resolv(?:e|ing|ed)\s+"
+        r"(?:the\s+)?(?:exception|stockout|err_auth_409|insurance|pharmacy|blocker)\b",
+        re.IGNORECASE,
+    ),
+)
+
+_HOUSEKEEPING_TARGET = (
+    r"(?:housekeeping|evs|environmental\s+services|room\s+(?:cleaning|turnover)|"
+    r"bed\s+(?:turnover|cleaning|prep|preparation)|(?:the\s+)?bed\s+ready|bed_ready)"
+)
+_HOUSEKEEPING_ACTION_PATTERNS = (
+    re.compile(
+        r"\b(?:dispatch(?:ing|ed)?|send(?:ing)?|assign(?:ing)?|schedul(?:e|ing)|start(?:ing)?|"
+        r"begin(?:ning)?|initiat(?:e|ing)|trigger(?:ing)?|deploy(?:ing)?|mobiliz(?:e|ing)|"
+        r"notify(?:ing)?|alert(?:ing)?|proceed(?:ing)?\s+with|perform(?:ing)?|execut(?:e|ing)|"
+        r"complet(?:e|ing)|mark(?:ing)?|prepar(?:e|ing)|turn(?:ing)?\s+over)\b"
+        r"[^.!?\n;]{0,40}\b" + _HOUSEKEEPING_TARGET + r"\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:housekeeping|evs)\b\s+(?:should|must|can|may|needs\s+to|to)\s+"
+        r"(?:be\s+)?(?:dispatch(?:ed)?|start|begin|clean|turn\s+over|proceed|prepare|ready)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:clean(?:ing)?|turn(?:ing)?\s+over)\s+(?:the\s+)?(?:patient(?:'s)?\s+)?(?:room|bed)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bmark(?:ing)?\s+(?:the\s+)?bed\s+(?:as\s+)?ready\b", re.IGNORECASE),
+)
+_PRE_DEPARTURE_TIMING_RE = re.compile(
+    r"\b(?:(?:before|prior\s+to|ahead\s+of)\s+(?:the\s+)?(?:confirmed\s+)?(?:patient\s+)?depart(?:s|ed|ure|ing)?|"
+    r"until\s+after\s+nothing)\b",
+    re.IGNORECASE,
+)
+_EARLY_DISPATCH_MODIFIER_RE = re.compile(
+    r"\b(?:before|prior\s+to|ahead\s+of)\s+(?:the\s+)?(?:confirmed\s+)?(?:patient\s+)?depart|"
+    r"\bimmediately\b|\bright\s+away\b|\bnow\b",
+    re.IGNORECASE,
+)
+_DEPARTURE_GATE_RE = re.compile(
+    r"\b(?:"
+    r"(?:after|once|when|following|upon|until)\s+(?:the\s+)?(?:confirmed\s+)?(?:patient\s+)?depart(?:s|ed|ure|ing)?\b|"
+    r"(?:after|once|when|following|upon|until)\s+(?:physical\s+)?(?:patient\s+)?departure\s+"
+    r"(?:is|has\s+been)\s+(?:confirmed|completed|recorded)\b|"
+    r"(?:once|when|after|until)\s+(?:the\s+)?(?:patient\s+(?:has\s+)?departed|confirmed\s+departure)\b|"
+    r"(?:wait(?:ing)?|locked|blocked|gated|hold)\s+until\s+[^.!?\n;]{0,40}\bdepart(?:s|ed|ure|ing)?\b|"
+    r"only\s+after\s+[^.!?\n;]{0,40}\bdepart(?:s|ed|ure|ing)?\b"
+    r")",
+    re.IGNORECASE,
+)
 
 
 def _configured_timeout_seconds() -> float:
@@ -270,6 +364,9 @@ def _build_advisory_prompt(context: MinimizedAdvisoryContext) -> tuple[str, str]
         "Safety rules: you CANNOT mutate workflow state, auto-approve insurance denials, "
         "alter clinical orders, auto-resolve specialist exceptions, confirm patient departure, "
         "or dispatch housekeeping before confirmed departure. "
+        "Never recommend dispatching, scheduling, notifying, or starting housekeeping unless "
+        "patient_departed is 'completed' and housekeeping_dispatched is unlocked; if patient departure "
+        "is not completed, state that housekeeping remains locked until after patient departure is confirmed. "
         "Provide a concise discharge summary, explain only the verified operational blockers "
         "present in the provided synthetic JSON context, and draft targeted human escalations "
         "for pharmacist/billing/transport specialists as applicable. "
@@ -292,12 +389,80 @@ def _extract_json_object(raw_text: str) -> dict[str, Any]:
     return parsed
 
 
-def _contains_unsafe_directive(text: str) -> bool:
-    for pattern in _UNSAFE_DIRECTIVE_PATTERNS:
-        for match in pattern.finditer(text):
-            prefix = text[max(0, match.start() - 60) : match.start()]
-            if _NEGATED_WINDOW_RE.search(prefix):
-                continue
+def _is_match_negated(
+    sentence: str,
+    match_start: int,
+    prior_negated_ends: list[int],
+) -> bool:
+    prefix = sentence[:match_start]
+    if _DIRECT_NEGATION_RE.search(prefix):
+        return True
+    for prev_end in reversed(prior_negated_ends):
+        between = sentence[prev_end:match_start]
+        if _CLAUSE_BREAK_WORD_RE.search(between):
+            return False
+        if _NEGATED_LIST_CONTINUATION_RE.fullmatch(between):
+            return True
+    return False
+
+
+def _is_housekeeping_unlocked(context: MinimizedAdvisoryContext) -> bool:
+    ms_by_id = {m["milestone_id"]: m for m in context.milestones}
+    departed_completed = ms_by_id.get("patient_departed", {}).get("status") == "completed"
+    hk_ms = ms_by_id.get("housekeeping_dispatched")
+    if hk_ms is None:
+        return False
+    return departed_completed and not bool(hk_ms.get("locked", True))
+
+
+def _contains_unsafe_housekeeping_recommendation(
+    sentence: str,
+    *,
+    hk_unlocked: bool,
+) -> bool:
+    matches: list[re.Match[str]] = []
+    for pattern in _HOUSEKEEPING_ACTION_PATTERNS:
+        matches.extend(pattern.finditer(sentence))
+    if not matches:
+        return False
+    matches.sort(key=lambda m: m.start())
+
+    has_pre_departure_timing = bool(_PRE_DEPARTURE_TIMING_RE.search(sentence))
+    has_early_modifier = bool(_EARLY_DISPATCH_MODIFIER_RE.search(sentence))
+    has_departure_gate = bool(_DEPARTURE_GATE_RE.search(sentence))
+
+    negated_ends: list[int] = []
+    for match in matches:
+        if _is_match_negated(sentence, match.start(), negated_ends):
+            negated_ends.append(match.end())
+            continue
+        # Even if DAG is unlocked, recommending housekeeping *before* departure is unsafe.
+        if has_pre_departure_timing:
+            return True
+        if not hk_unlocked:
+            if has_early_modifier or not has_departure_gate:
+                return True
+    return False
+
+
+def _contains_unsafe_directive(text: str, context: MinimizedAdvisoryContext | None = None) -> bool:
+    hk_unlocked = _is_housekeeping_unlocked(context) if context is not None else False
+    for sentence in re.split(r"[.!?\n;]+", text):
+        if not sentence.strip():
+            continue
+        matches: list[re.Match[str]] = []
+        for pattern in _UNSAFE_DIRECTIVE_PATTERNS:
+            matches.extend(pattern.finditer(sentence))
+        matches.sort(key=lambda m: m.start())
+
+        negated_ends: list[int] = []
+        for match in matches:
+            if _is_match_negated(sentence, match.start(), negated_ends):
+                negated_ends.append(match.end())
+            else:
+                return True
+
+        if _contains_unsafe_housekeeping_recommendation(sentence, hk_unlocked=hk_unlocked):
             return True
     return False
 
@@ -471,7 +636,7 @@ def _validate_provider_output(
 
     # Reject affirmative unsafe autonomous/bypass recommendations so fallback handles them safely.
     for text_block in (cleaned_summary, *cleaned_actions, cleaned_draft or ""):
-        if text_block and _contains_unsafe_directive(text_block):
+        if text_block and _contains_unsafe_directive(text_block, context):
             raise ValueError("Provider output contained an unsafe autonomous recommendation.")
 
     # Always anchor blockers to the actual server-side role-filtered database state so an LLM

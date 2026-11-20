@@ -191,6 +191,84 @@ def test_hallucinated_blocker_is_stripped_and_anchored_to_db_state(
             "suggested_actions": ["Modify the clinical order to remove the stocked-out drug."],
             "escalation_draft": None,
         },
+        {
+            "summary": "Case 402 is blocked.",
+            "blockers": ["MEDICATION_STOCKOUT", "ERR_AUTH_409"],
+            "suggested_actions": ["Dispatch housekeeping before the patient departs."],
+            "escalation_draft": None,
+        },
+        {
+            "summary": "Dispatch housekeeping before the patient departs.",
+            "blockers": ["MEDICATION_STOCKOUT", "ERR_AUTH_409"],
+            "suggested_actions": ["Route blockers to specialists."],
+            "escalation_draft": None,
+        },
+        {
+            "summary": "Case 402 is blocked.",
+            "blockers": ["MEDICATION_STOCKOUT", "ERR_AUTH_409"],
+            "suggested_actions": ["Send housekeeping to room 402."],
+            "escalation_draft": None,
+        },
+        {
+            "summary": "Case 402 is blocked.",
+            "blockers": ["MEDICATION_STOCKOUT", "ERR_AUTH_409"],
+            "suggested_actions": ["Start room turnover cleaning."],
+            "escalation_draft": None,
+        },
+        {
+            "summary": "Case 402 is blocked.",
+            "blockers": ["MEDICATION_STOCKOUT", "ERR_AUTH_409"],
+            "suggested_actions": ["Housekeeping should start cleaning the room."],
+            "escalation_draft": None,
+        },
+        {
+            "summary": "Case 402 is blocked.",
+            "blockers": ["MEDICATION_STOCKOUT", "ERR_AUTH_409"],
+            "suggested_actions": ["Mark the bed ready."],
+            "escalation_draft": None,
+        },
+        {
+            "summary": "Case 402 is blocked.",
+            "blockers": ["MEDICATION_STOCKOUT", "ERR_AUTH_409"],
+            "suggested_actions": ["Do not delay and dispatch housekeeping."],
+            "escalation_draft": None,
+        },
+        {
+            "summary": "Do not delay and override the insurance denial.",
+            "blockers": ["ERR_AUTH_409"],
+            "suggested_actions": ["Proceed with discharge."],
+            "escalation_draft": None,
+        },
+        {
+            "summary": "Case 402 is blocked.",
+            "blockers": ["ERR_AUTH_409"],
+            "suggested_actions": ["Do not wait, override the insurance denial."],
+            "escalation_draft": None,
+        },
+        {
+            "summary": "Case 402 is blocked.",
+            "blockers": ["ERR_AUTH_409"],
+            "suggested_actions": ["Do not hesitate to override the insurance denial."],
+            "escalation_draft": None,
+        },
+        {
+            "summary": "Case 402 is blocked.",
+            "blockers": ["ERR_AUTH_409"],
+            "suggested_actions": ["Do not auto-approve and override the insurance denial."],
+            "escalation_draft": None,
+        },
+        {
+            "summary": "Case 402 is blocked.",
+            "blockers": ["ERR_AUTH_409"],
+            "suggested_actions": ["Do not delay or override the insurance denial."],
+            "escalation_draft": None,
+        },
+        {
+            "summary": "Case 402 is blocked.",
+            "blockers": ["ERR_AUTH_409"],
+            "suggested_actions": ["Do not wait and auto-approve ERR_AUTH_409."],
+            "escalation_draft": None,
+        },
     ],
 )
 def test_unsafe_llm_recommendations_trigger_deterministic_fallback(
@@ -207,6 +285,99 @@ def test_unsafe_llm_recommendations_trigger_deterministic_fallback(
     assert body["generation_mode"] == "deterministic_fallback"
     assert set(body["blockers"]) == {"MEDICATION_STOCKOUT", "ERR_AUTH_409"}
     assert _snapshot_workflow_tables() == before
+
+
+@pytest.mark.parametrize(
+    "safe_response",
+    [
+        {
+            "summary": "Case 402 is blocked. Do not override the insurance denial.",
+            "blockers": ["MEDICATION_STOCKOUT", "ERR_AUTH_409"],
+            "suggested_actions": ["Route ERR_AUTH_409 to billing specialist."],
+            "escalation_draft": None,
+        },
+        {
+            "summary": "You cannot auto-approve or override the insurance denial.",
+            "blockers": ["MEDICATION_STOCKOUT", "ERR_AUTH_409"],
+            "suggested_actions": [
+                "Housekeeping can dispatch room turnover cleaning after confirmed departure.",
+                "Do not dispatch housekeeping until patient departure is confirmed.",
+            ],
+            "escalation_draft": "Avoid altering the clinical order; pharmacist review required.",
+        },
+    ],
+)
+def test_safe_negated_reminders_and_departure_gated_advice_stay_llm(
+    client: TestClient,
+    monkeypatch,
+    safe_response: dict[str, Any],
+) -> None:
+    monkeypatch.setattr(api, "ADVISORY_PROVIDER", _FakeProvider(response=safe_response))
+    resp = client.post("/api/agent/analyze", headers=_auth("doctor"), json={"patient_id": "402"})
+    assert resp.status_code == 200
+    assert resp.json()["generation_mode"] == "llm"
+
+
+def test_housekeeping_recommendation_respects_confirmed_departure_dag_state(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    # Advance case #406 through departure so housekeeping_dispatched is genuinely unlocked.
+    version = 1
+    steps = [
+        ("pharmacy", "completed", "pharmacist"),
+        ("insurance", "completed", "billing_specialist"),
+        ("transport", "completed", "transport_staff"),
+        ("patient_departed", "in_progress", "transport_staff"),
+        ("patient_departed", "completed", "transport_staff"),
+    ]
+    for idx, (ms_id, target, role) in enumerate(steps):
+        res = client.post(
+            "/api/patients/406/milestones",
+            headers={**_auth(role), "Idempotency-Key": f"advance-406-hk-{idx}"},
+            json={
+                "milestone_id": ms_id,
+                "target_status": target,
+                "expected_version": version,
+                "reason": "Synthetic test progression to confirmed departure.",
+            },
+        )
+        assert res.status_code == 200
+        version = res.json()["version"]
+
+    # Now affirmative housekeeping dispatch is valid and remains generation_mode='llm'
+    monkeypatch.setattr(
+        api,
+        "ADVISORY_PROVIDER",
+        _FakeProvider(
+            response={
+                "summary": "Patient departure is confirmed; housekeeping turnover can now proceed.",
+                "blockers": [],
+                "suggested_actions": ["Dispatch housekeeping to clean the room."],
+                "escalation_draft": None,
+            }
+        ),
+    )
+    ok_resp = client.post("/api/agent/analyze", headers=_auth("doctor"), json={"patient_id": "406"})
+    assert ok_resp.status_code == 200
+    assert ok_resp.json()["generation_mode"] == "llm"
+
+    # Contradicting DAG timing ("before the patient departs") still falls back
+    monkeypatch.setattr(
+        api,
+        "ADVISORY_PROVIDER",
+        _FakeProvider(
+            response={
+                "summary": "Dispatch housekeeping before the patient departs.",
+                "blockers": [],
+                "suggested_actions": ["Dispatch housekeeping before the patient departs."],
+                "escalation_draft": None,
+            }
+        ),
+    )
+    bad_resp = client.post("/api/agent/analyze", headers=_auth("doctor"), json={"patient_id": "406"})
+    assert bad_resp.status_code == 200
+    assert bad_resp.json()["generation_mode"] == "deterministic_fallback"
 
 
 def test_provider_timeout_and_network_failure_fall_back_gracefully(
